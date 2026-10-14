@@ -36,6 +36,7 @@
 #include "feature/dircache/dirserv.h"
 #include "feature/dirauth/dirvote.h"
 #include "test/log_test_helpers.h"
+#include "feature/hs/hs_cache.h"
 #include "feature/dirauth/voting_schedule.h"
 
 #include "feature/dircommon/dir_connection_st.h"
@@ -2747,6 +2748,44 @@ test_dir_handle_get_malformed_warn_ratelim(void *data)
     connection_free_minimal(TO_CONN(conn));
 }
 
+/* Return directory_handle_command()'s result for an HS descriptor POST that
+ * declares a Content-Length of <b>declared</b> and sends <b>len</b> body
+ * bytes. */
+static int
+handle_hs_post(size_t declared, size_t len)
+{
+  dir_connection_t *conn = new_dir_conn();
+  char *body = tor_malloc_zero(len);
+  buf_add_printf(TO_CONN(conn)->inbuf, "POST /tor/hs/3/publish HTTP/1.0\r\n"
+                 "Content-Length: %"TOR_PRIuSZ"\r\n\r\n", declared);
+  buf_add(TO_CONN(conn)->inbuf, body, len);
+  int r = directory_handle_command(conn);
+  tor_free(body);
+  connection_free_minimal(TO_CONN(conn));
+  return r;
+}
+
+/* Non-authorities refuse a request body too large to be an HS descriptor. */
+static void
+test_dir_handle_get_hs_post_size_limit(void *data)
+{
+  const size_t max_len = hs_cache_get_max_descriptor_size();
+  (void) data;
+
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  /* A body just under the limit is read; one that reaches it is refused. */
+  tt_int_op(handle_hs_post(max_len - 1, max_len - 1), OP_EQ, 0);
+  tt_int_op(handle_hs_post(max_len, max_len), OP_EQ, -1);
+#ifdef HAVE_MODULE_DIRAUTH
+  /* Authorities keep the 16 MB limit. */
+  get_options_mutable()->AuthoritativeDir = 1;
+  tt_int_op(handle_hs_post(max_len, max_len), OP_EQ, 0);
+#endif
+
+ done:
+  UNMOCK(connection_write_to_buf_impl_);
+}
+
 #define DIR_HANDLE_CMD(name,flags) \
   { #name, test_dir_handle_get_##name, (flags), NULL, NULL }
 
@@ -2818,5 +2857,6 @@ struct testcase_t dir_handle_get_tests[] = {
   DIR_HANDLE_CMD(status_vote_next_consensus_signatures, 0),
   DIR_HANDLE_CMD(parse_accept_encoding, 0),
   DIR_HANDLE_CMD(malformed_warn_ratelim, TT_FORK),
+  DIR_HANDLE_CMD(hs_post_size_limit, TT_FORK),
   END_OF_TESTCASES
 };

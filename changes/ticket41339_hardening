@@ -1,0 +1,6 @@
+  o Minor features (directory server, denial-of-service):
+    - Relays that are not directory authorities now close, without an answer,
+      a directory request whose body is too large to be an onion service
+      descriptor, the only upload they accept, instead of buffering up to 16 MB
+      of it. The limit is the HSV3MaxDescriptorSize consensus parameter. Part
+      of ticket 41339.

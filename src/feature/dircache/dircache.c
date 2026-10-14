@@ -1840,10 +1840,15 @@ directory_handle_command(dir_connection_t *conn)
   if (dir_conn_is_closing(conn)) {
     return -1;
   }
+  /* Non-authorities only accept HS descriptor posts, so don't buffer a body
+   * that is too large to be one. Authorities keep the 16 MB limit. */
+  size_t max_body_len = hs_cache_get_max_descriptor_size();
+  if (authdir_mode(get_options()) || max_body_len > MAX_DIR_UL_SIZE)
+    max_body_len = MAX_DIR_UL_SIZE;
 
   switch (connection_fetch_from_buf_http(TO_CONN(conn),
                               &headers, MAX_HEADERS_SIZE,
-                              &body, &body_len, MAX_DIR_UL_SIZE, 0)) {
+                              &body, &body_len, max_body_len, 0)) {
     case -1: /* overflow */
       log_fn_ratelim(&warning_limit, LOG_WARN, LD_DIRSERV,
                      "Oversized or malformed directory request from %s. "
