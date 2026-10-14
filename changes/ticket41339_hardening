@@ -7,3 +7,8 @@
     - Directory servers now discard anything a client sends on a tunneled
       (BEGIN_DIR) stream after its request, instead of buffering up to 10 MB of
       it per stream while they send their answer. Part of ticket 41339.
+
+  o Minor features (onion service directory):
+    - Reject an onion service descriptor whose signature has the wrong length
+      before verifying its signing key certificate, which saves a public key
+      operation per such upload. Part of ticket 41339.

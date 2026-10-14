@@ -2056,17 +2056,6 @@ desc_sig_is_valid(const char *b64_sig,
   /* Verifying nothing won't end well :). */
   tor_assert(encoded_len > 0);
 
-  /* Signature length check. */
-  if (strlen(b64_sig) != ED25519_SIG_BASE64_LEN) {
-    static ratelim_t warning_limit = RATELIM_INIT(600);
-    log_fn_ratelim(&warning_limit, LOG_WARN, LD_REND,
-                   "Service descriptor has an invalid signature length. "
-                   "Expected %d but got %lu",
-                   ED25519_SIG_BASE64_LEN,
-                   (unsigned long) strlen(b64_sig));
-    goto err;
-  }
-
   /* First, convert base64 blob to an ed25519 signature. */
   if (ed25519_signature_from_base64(&sig, b64_sig) != 0) {
     log_warn(LD_REND, "Service descriptor does not contain a valid "
@@ -2225,6 +2214,19 @@ desc_decode_plaintext_v3(smartlist_t *tokens,
     goto err;
   }
 
+  /* Check the signature length before any public key operation. */
+  tok = find_by_keyword(tokens, R3_SIGNATURE);
+  tor_assert(tok->n_args == 1);
+  const char *b64_sig = tok->args[0];
+  if (strlen(b64_sig) != ED25519_SIG_BASE64_LEN) {
+    static ratelim_t warning_limit = RATELIM_INIT(600);
+    log_fn_ratelim(&warning_limit, LOG_WARN, LD_REND,
+                   "Service descriptor has an invalid signature length. "
+                   "Expected %d but got %lu",
+                   ED25519_SIG_BASE64_LEN, (unsigned long) strlen(b64_sig));
+    goto err;
+  }
+
   /* Descriptor signing certificate. */
   tok = find_by_keyword(tokens, R3_DESC_SIGNING_CERT);
   tor_assert(tok->object_body);
@@ -2274,11 +2276,8 @@ desc_decode_plaintext_v3(smartlist_t *tokens,
   desc->superencrypted_blob = tor_memdup(tok->object_body, tok->object_size);
   desc->superencrypted_blob_size = tok->object_size;
 
-  /* Extract signature and verify it. */
-  tok = find_by_keyword(tokens, R3_SIGNATURE);
-  tor_assert(tok->n_args == 1);
-  /* First arg here is the actual encoded signature. */
-  if (!desc_sig_is_valid(tok->args[0], &desc->signing_pubkey,
+  /* Verify the signature. */
+  if (!desc_sig_is_valid(b64_sig, &desc->signing_pubkey,
                          encoded_desc, encoded_len)) {
     goto err;
   }

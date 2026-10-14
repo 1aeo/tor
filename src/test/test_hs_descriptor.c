@@ -654,6 +654,7 @@ static void
 test_decode_bad_signature(void *arg)
 {
   hs_desc_plaintext_data_t desc_plaintext;
+  char *padded = NULL;
   int ret;
 
   (void) arg;
@@ -664,12 +665,23 @@ test_decode_bad_signature(void *arg)
   update_approx_time(1502661599);
 
   setup_full_capture_of_logs(LOG_WARN);
+  /* A padded (88-character) signature is rejected on its length, before the
+   * signing key certificate is parsed and verified. */
+  tor_asprintf(&padded, "%.*s==\n", (int) strlen(HS_DESC_BAD_SIG) - 1,
+               HS_DESC_BAD_SIG);
+  ret = hs_desc_decode_plaintext(padded, &desc_plaintext);
+  tt_int_op(ret, OP_EQ, HS_DESC_DECODE_PLAINTEXT_ERROR);
+  tt_ptr_op(desc_plaintext.signing_key_cert, OP_EQ, NULL);
+  expect_single_log_msg_containing("invalid signature length");
+  mock_clean_saved_logs();
+
   ret = hs_desc_decode_plaintext(HS_DESC_BAD_SIG, &desc_plaintext);
   tt_int_op(ret, OP_EQ, HS_DESC_DECODE_PLAINTEXT_ERROR);
   expect_log_msg_containing("Malformed signature line. Rejecting.");
-  teardown_capture_of_logs();
 
  done:
+  teardown_capture_of_logs();
+  tor_free(padded);
   hs_desc_plaintext_data_free_contents(&desc_plaintext);
 }
 
