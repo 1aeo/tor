@@ -79,19 +79,19 @@ fetch_from_buf_http(buf_t *buf,
   log_debug(LD_HTTP,"headerlen %d, bodylen %d.", (int)headerlen, (int)bodylen);
 
   if (max_headerlen <= headerlen) {
-    log_warn(LD_HTTP,"headerlen %d larger than %d. Failing.",
+    log_info(LD_HTTP,"headerlen %d larger than %d. Failing.",
              (int)headerlen, (int)max_headerlen-1);
     return -1;
   }
   if (max_bodylen <= bodylen) {
-    log_warn(LD_HTTP,"bodylen %d larger than %d. Failing.",
+    log_info(LD_HTTP,"bodylen %d larger than %d. Failing.",
              (int)bodylen, (int)max_bodylen-1);
     return -1;
   }
 
   r = buf_http_find_content_length(headers, headerlen, &contentlen);
   if (r == -1) {
-    log_warn(LD_PROTOCOL, "Content-Length is bogus; maybe "
+    log_info(LD_PROTOCOL, "Content-Length is bogus; maybe "
              "someone is trying to crash us.");
     return -1;
   } else if (r == 1) {

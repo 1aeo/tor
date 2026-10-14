@@ -193,6 +193,7 @@ test_proto_http_invalid(void *arg)
     tt_ptr_op(b, OP_EQ, NULL);
     tt_u64_op(bl, OP_EQ, 0);
     expect_log_msg_containing(cases[i].expect);
+    expect_no_log_severity(LOG_WARN);
 
     buf_clear(buf);
     tor_free(h);

@@ -2722,6 +2722,31 @@ test_dir_handle_get_parse_accept_encoding(void *arg)
   ;
 }
 
+/* A malformed request makes the directory server log its oversized/malformed
+ * warning once, rate-limited, and at WARN (not silenced to info). */
+static void
+test_dir_handle_get_malformed_warn_ratelim(void *data)
+{
+  dir_connection_t *conn = NULL;
+  (void) data;
+
+  setup_full_capture_of_logs(LOG_WARN);
+  for (int i = 0; i < 2; i++) {
+    conn = new_dir_conn();
+    buf_add_string(TO_CONN(conn)->inbuf,
+                   "GET / HTTP/1.0\r\nContent-Length: z\r\n\r\n");
+    tt_int_op(directory_handle_command(conn), OP_EQ, -1);
+    connection_free_minimal(TO_CONN(conn));
+    conn = NULL;
+  }
+  expect_single_log_msg_containing("Oversized or malformed directory request");
+
+ done:
+  teardown_capture_of_logs();
+  if (conn)
+    connection_free_minimal(TO_CONN(conn));
+}
+
 #define DIR_HANDLE_CMD(name,flags) \
   { #name, test_dir_handle_get_##name, (flags), NULL, NULL }
 
@@ -2792,5 +2817,6 @@ struct testcase_t dir_handle_get_tests[] = {
   DIR_HANDLE_CMD(status_vote_next_consensus_signatures_busy, 0),
   DIR_HANDLE_CMD(status_vote_next_consensus_signatures, 0),
   DIR_HANDLE_CMD(parse_accept_encoding, 0),
+  DIR_HANDLE_CMD(malformed_warn_ratelim, TT_FORK),
   END_OF_TESTCASES
 };

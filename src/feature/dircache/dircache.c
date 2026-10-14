@@ -1823,6 +1823,7 @@ http_set_address_origin(const char *headers, connection_t *conn)
 int
 directory_handle_command(dir_connection_t *conn)
 {
+  static ratelim_t warning_limit = RATELIM_INIT(600);
   char *headers=NULL, *body=NULL;
   size_t body_len=0;
   int r;
@@ -1844,9 +1845,10 @@ directory_handle_command(dir_connection_t *conn)
                               &headers, MAX_HEADERS_SIZE,
                               &body, &body_len, MAX_DIR_UL_SIZE, 0)) {
     case -1: /* overflow */
-      log_warn(LD_DIRSERV,
-               "Request too large from %s to DirPort. Closing.",
-               connection_describe_peer(TO_CONN(conn)));
+      log_fn_ratelim(&warning_limit, LOG_WARN, LD_DIRSERV,
+                     "Oversized or malformed directory request from %s. "
+                     "Closing.",
+                     safe_str(connection_describe_peer(TO_CONN(conn))));
       return -1;
     case 0:
       log_debug(LD_DIRSERV,"command not all here yet.");

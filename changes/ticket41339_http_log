@@ -1,0 +1,7 @@
+  o Minor bugfixes (logging, directory server):
+    - Rate-limit the directory server's warning about oversized or malformed
+      HTTP requests, log the HTTP parser's own failures at info level, and no
+      longer log the requester's address unless SafeLogging is 0. Previously
+      one short request with a bogus Content-Length made any relay log two
+      warnings. Bugfix on all supported versions of Tor; related to ticket
+      41339.
