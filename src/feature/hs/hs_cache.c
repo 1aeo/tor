@@ -436,8 +436,9 @@ hs_cache_lookup_as_dir(uint32_t version, const char *query,
 }
 
 /** Using the given directory identifier, lookup the descriptor in our cache
- * and if present, increment the downloaded counter. This is done when the
- * directory connection fetching this descriptor is closed. */
+ * and if present, increment the downloaded counter. This is done once the
+ * directory connection serving it has written out the whole response, which
+ * does not prove that the client received it. */
 void
 hs_cache_mark_dowloaded_as_dir(const hs_ident_dir_conn_t *ident)
 {

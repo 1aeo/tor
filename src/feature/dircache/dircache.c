@@ -1464,7 +1464,7 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
 
   /* We have successfully written the descriptor on the connection outbuf so
    * save this query identifier into the dir_connection_t in order
-   * to associate it to the descriptor when closing. */
+   * to associate it to the descriptor once the response is written out. */
   {
     /* Decode blinded key. This is certain to work else
      * hs_cache_lookup_as_dir() would have failed. */

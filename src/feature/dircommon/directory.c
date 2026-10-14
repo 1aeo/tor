@@ -535,17 +535,6 @@ connection_dir_about_to_close(dir_connection_t *dir_conn)
     connection_dir_client_request_failed(dir_conn);
   }
 
-  /* If we are an HSDir, mark the corresponding descriptor as downloaded. This
-   * is needed for the OOM cache cleanup.
-   *
-   * This is done when the direction connection is closed in order to raise the
-   * attack cost of filling the cache with bogus descriptors. That attacker
-   * would need to increase that downloaded counter for the attack to be
-   * successful which is expensive. */
-  if (conn->purpose == DIR_PURPOSE_SERVER && dir_conn->hs_ident) {
-    hs_cache_mark_dowloaded_as_dir(dir_conn->hs_ident);
-  }
-
   connection_dir_client_refetch_hsdesc_if_needed(dir_conn);
 }
 
@@ -584,6 +573,11 @@ connection_dir_finished_flushing(dir_connection_t *conn)
         connection_mark_for_close(TO_CONN(conn));
       } else {
         log_debug(LD_DIRSERV, "Finished writing server response. Closing.");
+        /* If we are an HSDir, credit the download for the OOM cache cleanup
+         * only now that the whole response is written out. */
+        if (conn->hs_ident) {
+          hs_cache_mark_dowloaded_as_dir(conn->hs_ident);
+        }
         connection_mark_for_close(TO_CONN(conn));
       }
       return 0;

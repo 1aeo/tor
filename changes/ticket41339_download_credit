@@ -1,0 +1,6 @@
+  o Minor bugfixes (onion service directory):
+    - On HSDirs, count an onion service descriptor as downloaded only once its
+      response has been handed to the client's stream, not whenever the request
+      closes, so that requesting a descriptor and closing the stream or circuit
+      at once no longer protects it from cache pruning. Bugfix on 0.4.8.14;
+      related to ticket 41339.

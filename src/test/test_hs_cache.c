@@ -20,6 +20,7 @@
 #include "feature/dircache/dircache.h"
 #include "feature/dirclient/dirclient.h"
 #include "feature/dircommon/directory.h"
+#include "feature/hs/hs_ident.h"
 #include "feature/nodelist/networkstatus.h"
 #include "core/mainloop/connection.h"
 #include "core/proto/proto_http.h"
@@ -951,6 +952,79 @@ test_client_cache_remove(void *arg)
   UNMOCK(networkstatus_get_reasonably_live_consensus);
 }
 
+static void
+hsdir_mock_mark_for_close(connection_t *conn, int line, const char *file)
+{
+  (void) line;
+  (void) file;
+  conn->marked_for_close = 1;
+}
+
+/* An HSDir counts a descriptor as downloaded only once its whole response has
+ * left the dir connection's outbuf (connection_dir_finished_flushing()), not
+ * when the connection closes. A connection closed before then (for example an
+ * END or DESTROY processed before the exit edge read the response, or an edge
+ * already stopped on an empty package window or a blocked channel) earns no
+ * credit; a normal flush earns exactly one. This does not prove the client
+ * received the descriptor. */
+static void
+test_downloaded_counter_as_dir(void *arg)
+{
+  char *desc_str = NULL;
+  hs_descriptor_t *desc = NULL;
+  ed25519_keypair_t signing_kp;
+  dir_connection_t *conns[3] = { NULL, NULL, NULL };
+  const hs_cache_dir_descriptor_t *entry;
+  (void) arg;
+
+  init_test();
+  MOCK(connection_mark_for_close_internal_, hsdir_mock_mark_for_close);
+
+  tt_int_op(ed25519_keypair_generate(&signing_kp, 0), OP_EQ, 0);
+  desc = hs_helper_build_hs_desc_with_ip(&signing_kp);
+  tt_int_op(hs_desc_encode_descriptor(desc, &signing_kp, NULL, &desc_str),
+            OP_EQ, 0);
+  tt_int_op(hs_cache_store_as_dir(desc_str), OP_EQ, 0);
+  entry = lookup_v3_desc_as_dir(desc->plaintext_data.blinded_pubkey.pubkey);
+  tt_assert(entry);
+
+  /* Two server-side connections that each served this descriptor, and one
+   * that served something else. */
+  for (int i = 0; i < 3; i++) {
+    conns[i] = dir_connection_new(AF_INET);
+    TO_CONN(conns[i])->purpose = DIR_PURPOSE_SERVER;
+    TO_CONN(conns[i])->state = DIR_CONN_STATE_SERVER_WRITING;
+    if (i < 2)
+      conns[i]->hs_ident =
+        hs_ident_server_dir_conn_new(&desc->plaintext_data.blinded_pubkey);
+  }
+
+  /* Blocked output / early abort: closed before the response was ever written
+   * out (finished_flushing never ran). No credit. */
+  connection_mark_for_close(TO_CONN(conns[0]));
+  connection_dir_about_to_close(conns[0]);
+  tt_u64_op(entry->n_downloaded, OP_EQ, 0);
+
+  /* Normal flush: the whole response is written out, then the connection
+   * closes. Exactly one credit, and about_to_close does not add a second. */
+  tt_int_op(connection_dir_finished_flushing(conns[1]), OP_EQ, 0);
+  tt_assert(TO_CONN(conns[1])->marked_for_close);
+  connection_dir_about_to_close(conns[1]);
+  tt_u64_op(entry->n_downloaded, OP_EQ, 1);
+  /* A response with no descriptor finishes flushing and closes normally,
+   * without a credit. */
+  tt_int_op(connection_dir_finished_flushing(conns[2]), OP_EQ, 0);
+  tt_assert(TO_CONN(conns[2])->marked_for_close);
+  tt_u64_op(entry->n_downloaded, OP_EQ, 1);
+
+ done:
+  UNMOCK(connection_mark_for_close_internal_);
+  for (int i = 0; i < 3; i++)
+    connection_free_minimal(TO_CONN(conns[i]));
+  hs_descriptor_free(desc);
+  tor_free(desc_str);
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -968,6 +1042,8 @@ struct testcase_t hs_cache[] = {
   { "hsdir_revision_counter_check", test_hsdir_revision_counter_check, TT_FORK,
     NULL, NULL },
   { "upload_and_download_hs_desc", test_upload_and_download_hs_desc, TT_FORK,
+    NULL, NULL },
+  { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },
   { "client_cache", test_client_cache, TT_FORK,
     NULL, NULL },
