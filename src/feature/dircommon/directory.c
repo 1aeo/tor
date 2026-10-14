@@ -18,6 +18,7 @@
 #include "feature/dircommon/fp_pair.h"
 #include "feature/hs/hs_cache.h"
 #include "feature/stats/geoip_stats.h"
+#include "lib/buf/buffers.h"
 #include "lib/compress/compress.h"
 
 #include "core/or/circuit_st.h"
@@ -491,6 +492,15 @@ connection_dir_process_inbuf(dir_connection_t *conn)
       connection_mark_for_close(TO_CONN(conn));
       return -1;
     }
+    if (conn->base_.state == DIR_CONN_STATE_SERVER_COMMAND_WAIT)
+      return 0;
+  }
+  /* Once a tunneled request is read, even in this same read, discard
+   * whatever else the client sends instead of buffering it. Don't close the
+   * connection or stop reading: linked connections only notice EOF while
+   * reading. DirPort connections keep the limit below. */
+  if (DIR_CONN_IS_SERVER(TO_CONN(conn)) && TO_CONN(conn)->linked) {
+    buf_clear(TO_CONN(conn)->inbuf);
     return 0;
   }
 

@@ -13,6 +13,7 @@
 #include "core/or/or.h"
 #include "app/config/config.h"
 #include "core/mainloop/connection.h"
+#include "core/or/circuitlist.h"
 #include "feature/dircache/consdiffmgr.h"
 #include "feature/dircommon/directory.h"
 #include "feature/dircache/dircache.h"
@@ -39,6 +40,8 @@
 #include "feature/hs/hs_cache.h"
 #include "feature/dirauth/voting_schedule.h"
 
+#include "core/or/edge_connection_st.h"
+#include "core/or/or_circuit_st.h"
 #include "feature/dircommon/dir_connection_st.h"
 #include "feature/dirclient/dir_server_st.h"
 #include "feature/nodelist/networkstatus_st.h"
@@ -2786,6 +2789,81 @@ test_dir_handle_get_hs_post_size_limit(void *data)
   UNMOCK(connection_write_to_buf_impl_);
 }
 
+/* Helper: feed `in` (`in_len` bytes) into a dir connection with `purpose` and
+ * `state`, tunneled on a stream if `linked`, run
+ * connection_dir_process_inbuf(), and verify the resulting state and
+ * remaining inbuf length. */
+static void
+check_dir_inbuf(uint8_t purpose, uint8_t state, bool linked,
+                const char *in, size_t in_len,
+                uint8_t exp_state, size_t exp_inbuf)
+{
+  dir_connection_t *conn = new_dir_conn();
+  edge_connection_t *edge = edge_connection_new(CONN_TYPE_EXIT, AF_INET);
+  TO_CONN(conn)->purpose = purpose;
+  TO_CONN(conn)->state = state;
+  if (linked) {
+    connection_link_connections(TO_CONN(conn), TO_CONN(edge));
+    edge->on_circuit = TO_CIRCUIT(or_circuit_new(0, NULL));
+  }
+  buf_add(TO_CONN(conn)->inbuf, in, in_len);
+  tt_int_op(connection_dir_process_inbuf(conn), OP_EQ, 0);
+  tt_int_op(TO_CONN(conn)->state, OP_EQ, exp_state);
+  tt_size_op(connection_get_inbuf_len(TO_CONN(conn)), OP_EQ, exp_inbuf);
+  tt_assert(!TO_CONN(conn)->marked_for_close);
+ done:
+  connection_free_minimal(TO_CONN(conn));
+  connection_free_minimal(TO_CONN(edge));
+  circuit_free_all();
+}
+
+/* Verify that a dirserver discards trailing client input on a tunneled
+ * connection once it enters DIR_CONN_STATE_SERVER_WRITING (whether in the
+ * same read, a subsequent read, or >10 MB), while preserving partial server
+ * commands, client replies and DirPort input. */
+static void
+test_dir_handle_get_server_discards_extra_input(void *data)
+{
+  /* Content-Length: 0 bounds the body, so TRAILING survives the HTTP parser
+   * and only the discard can remove it. */
+  const char *req_trail =
+    "GET / HTTP/1.0\r\nContent-Length: 0\r\n\r\nTRAILING";
+  const char *req = "GET / HTTP/1.0\r\n\r\n";
+  const char *partial = "GET / HTTP/1.0\r\n";
+  const char *resp = "HTTP/1.0 200 OK\r\n\r\nbody";
+  const size_t big = 11 * 1024 * 1024;
+  char *junk = tor_malloc_zero(big);
+  (void) data;
+
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+
+  /* 1. Trailing bytes in the same read as a complete request are discarded. */
+  check_dir_inbuf(DIR_PURPOSE_SERVER, DIR_CONN_STATE_SERVER_COMMAND_WAIT, 1,
+                  req_trail, strlen(req_trail),
+                  DIR_CONN_STATE_SERVER_WRITING, 0);
+  /* 2. Later bytes arriving while already in SERVER_WRITING are discarded. */
+  check_dir_inbuf(DIR_PURPOSE_SERVER, DIR_CONN_STATE_SERVER_WRITING, 1,
+                  req, strlen(req), DIR_CONN_STATE_SERVER_WRITING, 0);
+  /* 3. Over 10 MB of trailing input is discarded without closing. */
+  check_dir_inbuf(DIR_PURPOSE_SERVER, DIR_CONN_STATE_SERVER_WRITING, 1,
+                  junk, big, DIR_CONN_STATE_SERVER_WRITING, 0);
+  /* 4. Partial server command stays in inbuf while in COMMAND_WAIT. */
+  check_dir_inbuf(DIR_PURPOSE_SERVER, DIR_CONN_STATE_SERVER_COMMAND_WAIT, 1,
+                  partial, strlen(partial),
+                  DIR_CONN_STATE_SERVER_COMMAND_WAIT, strlen(partial));
+  /* 5. Directory clients keep their response body. */
+  check_dir_inbuf(DIR_PURPOSE_FETCH_CONSENSUS, DIR_CONN_STATE_CLIENT_READING,
+                  0, resp, strlen(resp),
+                  DIR_CONN_STATE_CLIENT_READING, strlen(resp));
+  /* 6. So do DirPort connections, up to the 10 MB limit, as before. */
+  check_dir_inbuf(DIR_PURPOSE_SERVER, DIR_CONN_STATE_SERVER_WRITING, 0,
+                  req, strlen(req), DIR_CONN_STATE_SERVER_WRITING,
+                  strlen(req));
+
+  UNMOCK(connection_write_to_buf_impl_);
+  tor_free(junk);
+}
+
 #define DIR_HANDLE_CMD(name,flags) \
   { #name, test_dir_handle_get_##name, (flags), NULL, NULL }
 
@@ -2858,5 +2936,6 @@ struct testcase_t dir_handle_get_tests[] = {
   DIR_HANDLE_CMD(parse_accept_encoding, 0),
   DIR_HANDLE_CMD(malformed_warn_ratelim, TT_FORK),
   DIR_HANDLE_CMD(hs_post_size_limit, TT_FORK),
+  DIR_HANDLE_CMD(server_discards_extra_input, TT_FORK),
   END_OF_TESTCASES
 };
