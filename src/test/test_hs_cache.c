@@ -23,6 +23,7 @@
 #include "feature/hs/hs_ident.h"
 #include "feature/nodelist/networkstatus.h"
 #include "core/mainloop/connection.h"
+#include "core/mainloop/mainloop.h"
 #include "core/proto/proto_http.h"
 #include "core/or/circuitlist.h"
 #include "core/or/connection_edge.h"
@@ -1323,6 +1324,57 @@ test_dir_request_url_table_types(void *arg)
   free_fake_channel(chan);
 }
 
+#define DIR_CONN_GAUGE(state) \
+  get_metric(METRICS_NAME(relay_begindir_connections), "state", (state))
+
+/* The tunneled directory server connection gauge puts each open BEGIN_DIR
+ * stream in exactly one state, and ignores direct and closing connections. */
+static void
+test_dir_server_conns_gauge(void *arg)
+{
+  const char *states[] = { "command_wait", "writing_hs_descriptor",
+                           "writing_other", "draining" };
+  const int64_t added[ARRAY_LENGTH(states)] = { 1, 1, 1, 2 };
+  connection_t *conns[7];
+  ed25519_public_key_t pk;
+  (void) arg;
+
+  memset(&pk, 0, sizeof(pk));
+  for (size_t i = 0; i < 5; i++) {
+    conns[i] = TO_CONN(dir_connection_new(AF_INET));
+    conns[i]->purpose = DIR_PURPOSE_SERVER;
+    conns[i]->linked = 1;
+  }
+  conns[0]->state = DIR_CONN_STATE_SERVER_COMMAND_WAIT;
+  conns[1]->state = DIR_CONN_STATE_SERVER_WRITING;
+  TO_DIR_CONN(conns[1])->hs_ident = hs_ident_server_dir_conn_new(&pk);
+  conns[2]->state = DIR_CONN_STATE_SERVER_WRITING;
+  conns[3]->state = DIR_CONN_STATE_SERVER_WRITING;
+  conns[3]->linked = 0; /* Direct, not tunneled. */
+  conns[4]->state = DIR_CONN_STATE_SERVER_COMMAND_WAIT;
+  conns[4]->marked_for_close = 1;
+  /* Streams whose directory connection is gone, or closing. */
+  conns[5] = TO_CONN(edge_connection_new(CONN_TYPE_EXIT, AF_INET));
+  conns[6] = TO_CONN(edge_connection_new(CONN_TYPE_EXIT, AF_INET));
+  conns[5]->linked = conns[6]->linked = 1;
+  conns[6]->linked_conn = conns[4];
+
+  for (size_t i = 0; i < ARRAY_LENGTH(conns); i++) {
+    conns[i]->conn_array_index = smartlist_len(get_connection_array());
+    smartlist_add(get_connection_array(), conns[i]);
+  }
+  for (size_t i = 0; i < ARRAY_LENGTH(states); i++)
+    tt_i64_op(DIR_CONN_GAUGE(states[i]), OP_EQ, added[i]);
+
+ done:
+  conns[6]->linked_conn = NULL;
+  for (size_t i = 0; i < ARRAY_LENGTH(conns); i++) {
+    if (conns[i]->conn_array_index >= 0)
+      connection_remove(conns[i]);
+    connection_free_minimal(conns[i]);
+  }
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -1346,6 +1398,8 @@ struct testcase_t hs_cache[] = {
   { "dir_request_response_metrics", test_dir_request_response_metrics,
     TT_FORK, NULL, NULL },
   { "dir_request_url_table_types", test_dir_request_url_table_types, TT_FORK,
+    NULL, NULL },
+  { "dir_server_conns_gauge", test_dir_server_conns_gauge, TT_FORK,
     NULL, NULL },
   { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },

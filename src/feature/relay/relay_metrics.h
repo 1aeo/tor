@@ -71,6 +71,8 @@ typedef enum {
   RELAY_METRICS_NUM_BEGINDIR_REQUESTS,
   /** Tunneled directory responses handed to their stream, by type. */
   RELAY_METRICS_NUM_BEGINDIR_RESPONSES,
+  /** Open tunneled directory server connections, by state. */
+  RELAY_METRICS_BEGINDIR_CONNS,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */

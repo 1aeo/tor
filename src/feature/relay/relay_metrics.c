@@ -20,6 +20,7 @@
 #include "core/or/circuitlist.h"
 #include "core/or/dos.h"
 #include "core/or/relay.h"
+#include "core/or/connection_st.h"
 
 #include "app/config/config.h"
 
@@ -31,6 +32,7 @@
 #include "lib/metrics/metrics_store.h"
 
 #include "feature/dircommon/dir_connection_st.h"
+#include "feature/dircommon/directory.h"
 #include "feature/hs/hs_dos.h"
 #include "feature/nodelist/nodelist.h"
 #include "feature/nodelist/node_st.h"
@@ -73,6 +75,7 @@ static void fill_hsdir_get_values(void);
 static void fill_hsdir_post_values(void);
 static void fill_begindir_request_values(void);
 static void fill_begindir_response_values(void);
+static void fill_begindir_conns_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -275,6 +278,13 @@ static const relay_metrics_entry_t base_metrics[] =
     .name = METRICS_NAME(relay_begindir_response_total),
     .help = "Total number of tunneled directory responses we handed off",
     .fill_fn = fill_begindir_response_values,
+  },
+  {
+    .key = RELAY_METRICS_BEGINDIR_CONNS,
+    .type = METRICS_TYPE_GAUGE,
+    .name = METRICS_NAME(relay_begindir_connections),
+    .help = "Open tunneled directory streams, by state",
+    .fill_fn = fill_begindir_conns_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1436,6 +1446,40 @@ fill_begindir_response_values(void)
   fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_BEGINDIR_RESPONSES],
                       NULL, NULL, "type", names, dir_responses,
                       ARRAY_LENGTH(names));
+}
+
+/** Fill the RELAY_METRICS_BEGINDIR_CONNS gauge. Each open BEGIN_DIR stream
+ * is in exactly one state: its directory connection is waiting for a request
+ * or writing a response, or that connection is gone and only the stream is
+ * left, draining what it was handed onto the circuit. */
+static void
+fill_begindir_conns_values(void)
+{
+  enum { WAITING, WRITING_HS, WRITING_OTHER, DRAINING, N_STATES };
+  static const char *const names[] = {
+    [WAITING] = "command_wait",
+    [WRITING_HS] = "writing_hs_descriptor",
+    [WRITING_OTHER] = "writing_other",
+    [DRAINING] = "draining",
+  };
+  uint64_t counts[N_STATES] = {0};
+
+  SMARTLIST_FOREACH_BEGIN(get_connection_array(), const connection_t *, c) {
+    if (c->marked_for_close || !c->linked)
+      continue;
+    if (c->type == CONN_TYPE_DIR && DIR_CONN_IS_SERVER(c)) {
+      if (c->state == DIR_CONN_STATE_SERVER_COMMAND_WAIT)
+        counts[WAITING]++;
+      else if (c->state == DIR_CONN_STATE_SERVER_WRITING)
+        counts[CONST_TO_DIR_CONN(c)->hs_ident ? WRITING_HS : WRITING_OTHER]++;
+    } else if (c->type == CONN_TYPE_EXIT &&
+               (!c->linked_conn || c->linked_conn->marked_for_close)) {
+      counts[DRAINING]++;
+    }
+  } SMARTLIST_FOREACH_END(c);
+
+  fill_labeled_values(&base_metrics[RELAY_METRICS_BEGINDIR_CONNS], NULL,
+                      NULL, "state", names, counts, N_STATES);
 }
 
 /** Fill the metrics store for the RELAY_METRICS_CIRC_DROP_CELL counter. */

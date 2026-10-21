@@ -12,3 +12,6 @@
       fully handed to their stream, as
       tor_relay_begindir_response_total{type="hs_descriptor"|"other"}. Part of
       ticket 41339.
+    - Report the tunneled directory connections a relay has open, by state, as
+      the gauge tor_relay_begindir_connections. These connections have no
+      socket, so tor_relay_connections doesn't show them. Part of ticket 41339.
