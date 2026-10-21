@@ -573,7 +573,7 @@ test_rephist_v3_onions(void *arg)
 
   /* Check that storing the same descriptor twice does not work */
   ret = hs_cache_store_as_dir(desc1_str);
-  tt_int_op(ret, OP_EQ, -1);
+  tt_int_op(ret, OP_EQ, -2);
 
   /* cleanup */
   hs_descriptor_free(desc1);

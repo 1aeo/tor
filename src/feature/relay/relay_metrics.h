@@ -63,6 +63,10 @@ typedef enum {
   RELAY_METRICS_CIRC_PROTO_VIOLATION,
   /** Number of drop cell seen. */
   RELAY_METRICS_CIRC_DROP_CELL,
+  /** Onion service descriptor fetches, by outcome. */
+  RELAY_METRICS_NUM_HSDIR_GET,
+  /** Onion service descriptor uploads, by outcome. */
+  RELAY_METRICS_NUM_HSDIR_POST,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */
@@ -135,5 +139,47 @@ typedef enum {
 } rend1_action_t;
 
 void relay_increment_rend1_action(rend1_action_t);
+
+/** Outcome of an onion service descriptor fetch (GET /tor/hs/3/). */
+typedef enum {
+  /** Found in our cache and queued: 200. */
+  HSDIR_GET_SUCCESS,
+  /** Not in our cache, or not a valid blinded key: 404. */
+  HSDIR_GET_NOT_FOUND,
+  /** Not over an anonymous circuit, because the previous hop never
+   * authenticated (see connection_dir_is_anonymous()): 503. */
+  HSDIR_GET_SINGLE_HOP,
+  /** Refused by a DoS defense, such as the limit of one HSDir request per
+   * circuit: no answer. */
+  HSDIR_GET_REFUSED,
+
+  HSDIR_GET_ACTION_COUNT
+} hsdir_get_action_t;
+
+void relay_increment_hsdir_get_action(hsdir_get_action_t);
+
+/** Outcome of an onion service descriptor upload (POST /tor/hs/). */
+typedef enum {
+  /** Stored: 200. */
+  HSDIR_POST_SUCCESS,
+  /** Unsupported version or command in the URL: 400. */
+  HSDIR_POST_BAD_URL,
+  /** Descriptor didn't parse or validate: 400. */
+  HSDIR_POST_INVALID,
+  /** Valid descriptor, but its revision counter is not greater than the one
+   * we have cached: 400. This happens without any fault when several
+   * instances publish for the same onion address. */
+  HSDIR_POST_NOT_NEWER,
+  /** Not over an anonymous circuit, because the previous hop never
+   * authenticated (see connection_dir_is_anonymous()): 503. */
+  HSDIR_POST_SINGLE_HOP,
+  /** Refused by a DoS defense, such as the limit of one HSDir request per
+   * circuit: no answer. */
+  HSDIR_POST_REFUSED,
+
+  HSDIR_POST_ACTION_COUNT
+} hsdir_post_action_t;
+
+void relay_increment_hsdir_post_action(hsdir_post_action_t);
 
 #endif /* !defined(TOR_FEATURE_RELAY_RELAY_METRICS_H) */

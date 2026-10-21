@@ -34,6 +34,7 @@
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/routerlist.h"
 #include "feature/relay/relay_config.h"
+#include "feature/relay/relay_metrics.h"
 #include "feature/relay/routermode.h"
 #include "feature/stats/geoip_stats.h"
 #include "feature/stats/rephist.h"
@@ -1438,11 +1439,14 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
   /* Reject non anonymous dir connections (which also tests if encrypted). We
    * do not allow single hop clients to query an HSDir. */
   if (!connection_dir_is_anonymous(conn)) {
+    if (TO_CONN(conn)->linked)
+      relay_increment_hsdir_get_action(HSDIR_GET_SINGLE_HOP);
     write_short_http_response(conn, 503,
                               "Rejecting single hop HS v3 descriptor request");
     goto done;
   }
   if (!hsdir_request_allowed_on_circuit(conn)) {
+    relay_increment_hsdir_get_action(HSDIR_GET_REFUSED);
     goto done;
   }
 
@@ -1454,11 +1458,13 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
   retval = hs_cache_lookup_as_dir(HS_VERSION_THREE,
                                   pubkey_str, &desc_str);
   if (retval <= 0 || desc_str == NULL) {
+    relay_increment_hsdir_get_action(HSDIR_GET_NOT_FOUND);
     write_short_http_response(conn, 404, "Not found");
     goto done;
   }
 
   /* Found requested descriptor! Pass it to this nice client. */
+  relay_increment_hsdir_get_action(HSDIR_GET_SUCCESS);
   write_http_response_header(conn, strlen(desc_str), NO_METHOD, 0);
   connection_buf_add(desc_str, strlen(desc_str), TO_CONN(conn));
 
@@ -1613,8 +1619,9 @@ parse_hs_version_from_post(const char *url, const char *prefix,
 STATIC int
 handle_post_hs_descriptor(const char *url, const char *body)
 {
-  int version;
+  int version, ret;
   const char *end_pos;
+  hsdir_post_action_t action = HSDIR_POST_BAD_URL;
 
   tor_assert(url);
   tor_assert(body);
@@ -1632,7 +1639,8 @@ handle_post_hs_descriptor(const char *url, const char *body)
 
   switch (version) {
   case HS_VERSION_THREE:
-    if (hs_cache_store_as_dir(body) < 0) {
+    if ((ret = hs_cache_store_as_dir(body)) < 0) {
+      action = ret == -2 ? HSDIR_POST_NOT_NEWER : HSDIR_POST_INVALID;
       goto err;
     }
     log_info(LD_REND, "Publish request for HS descriptor handled "
@@ -1643,9 +1651,11 @@ handle_post_hs_descriptor(const char *url, const char *body)
     goto err;
   }
 
+  relay_increment_hsdir_post_action(HSDIR_POST_SUCCESS);
   return 200;
  err:
   /* Bad request. */
+  relay_increment_hsdir_post_action(action);
   return 400;
 }
 
@@ -1689,11 +1699,14 @@ directory_handle_command_post,(dir_connection_t *conn, const char *headers,
       goto done;
     }
     if (!connection_dir_is_anonymous(conn)) {
+      if (TO_CONN(conn)->linked)
+        relay_increment_hsdir_post_action(HSDIR_POST_SINGLE_HOP);
       write_short_http_response(conn, 503,
                                 "Rejecting single hop HS descriptor post");
       goto done;
     }
     if (!hsdir_request_allowed_on_circuit(conn)) {
+      relay_increment_hsdir_post_action(HSDIR_POST_REFUSED);
       goto done;
     }
     const char *msg = "HS descriptor stored successfully.";

@@ -1,0 +1,6 @@
+  o Minor features (metrics port, relay):
+    - Count onion service descriptor fetches and uploads on HSDirs by outcome,
+      as tor_relay_hsdir_fetch_total and tor_relay_hsdir_upload_total. Uploads
+      that are valid but not newer than the cached descriptor, which happens
+      without any fault when several instances publish for the same address,
+      are counted apart from invalid ones. Part of ticket 41339.

@@ -28,6 +28,7 @@
 #include "core/or/channel.h"
 #include "core/or/dos.h"
 #include "feature/relay/relay_metrics.h"
+#include "lib/metrics/metrics_store_entry.h"
 #include "lib/crypt_ops/crypto_format.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/metrics/metrics_store.h"
@@ -38,6 +39,7 @@
 #include "feature/dircommon/dir_connection_st.h"
 #include "feature/nodelist/networkstatus_st.h"
 
+#include "test/fakechans.h"
 #include "test/hs_test_helpers.h"
 #include "test/log_test_helpers.h"
 #include "test/test_helpers.h"
@@ -278,7 +280,7 @@ test_directory(void *arg)
     tt_int_op(ret, OP_EQ, 0);
     /* Re-add, it should fail since we already have it. */
     ret = hs_cache_store_as_dir(desc1_str);
-    tt_int_op(ret, OP_EQ, -1);
+    tt_int_op(ret, OP_EQ, -2);
     /* Try to clean now which should be fine, there is at worst few seconds
      * between the store and this call. */
     hs_cache_clean_as_dir(time(NULL));
@@ -537,6 +539,111 @@ helper_fetch_desc_from_hsdir(const ed25519_public_key_t *blinded_key)
   }
 
   return received_desc;
+}
+
+/* Return the value of <b>name</b>{<b>key</b>="<b>value</b>"} in the relay
+ * metrics store. If there is no such entry, fail the test and return -1. */
+static int64_t
+get_metric(const char *name, const char *key, const char *value)
+{
+  const smartlist_t *entries =
+    metrics_store_get_all(smartlist_get(relay_metrics_get_stores(), 0), name);
+  const metrics_store_entry_t *entry =
+    metrics_store_find_entry_with_label(entries,
+                                        metrics_format_label(key, value));
+  if (!entry)
+    TT_FAIL(("no series %s{%s=\"%s\"}", name, key, value));
+  return entry ? metrics_store_entry_get_value(entry) : -1;
+}
+#define GET_METRIC(action) \
+  get_metric(METRICS_NAME(relay_hsdir_fetch_total), "action", (action))
+#define POST_METRIC(action) \
+  get_metric(METRICS_NAME(relay_hsdir_upload_total), "action", (action))
+
+/* Return a new OR circuit whose previous hop is <b>chan</b>. */
+static or_circuit_t *
+new_or_circ(channel_t *chan)
+{
+  or_circuit_t *circ = or_circuit_new(0, NULL);
+
+  circ->p_chan = chan;
+  /* Closing a circuit checks its invariants, which need a valid purpose. */
+  TO_CIRCUIT(circ)->purpose = CIRCUIT_PURPOSE_OR;
+  return circ;
+}
+
+/* As hsdir_request_on_circuit(), on a new OR circuit whose previous hop is
+ * <b>chan</b>. */
+static int
+hsdir_request_on_new_circ(channel_t *chan, const char *req, const char *body)
+{
+  return hsdir_request_on_circuit(new_or_circ(chan), req, body);
+}
+
+/* HSDirs count descriptor fetches and uploads by outcome. */
+static void
+test_hsdir_get_post_metrics(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  ed25519_keypair_t signing_kp;
+  hs_descriptor_t *desc = NULL;
+  dir_connection_t *dirport;
+  or_circuit_t *circs[2];
+  char *desc_str = NULL, *get = NULL;
+  const char *post = "POST /tor/hs/3/publish HTTP/1.0\r\n\r\n";
+  const char *get_actions[] = { "success", "not_found", "single_hop",
+                                "refused" };
+  const char *post_actions[] = { "success", "not_newer", "invalid", "bad_url",
+                                 "single_hop", "refused" };
+  (void) arg;
+
+  init_test();
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  get_options_mutable()->ORPort_set = 1; /* Accept descriptor uploads. */
+  tt_int_op(ed25519_keypair_generate(&signing_kp, 0), OP_EQ, 0);
+  desc = hs_helper_build_hs_desc_with_ip(&signing_kp);
+  tt_int_op(hs_desc_encode_descriptor(desc, &signing_kp, NULL, &desc_str),
+            OP_EQ, 0);
+  tor_asprintf(&get, GET("/tor/hs/3/%s"), helper_get_hsdir_query(desc));
+
+  hsdir_request_on_new_circ(chan, get, NULL); /* Not uploaded yet. */
+  /* The second request on a circuit is refused, and closes the circuit. */
+  for (size_t i = 0; i < ARRAY_LENGTH(circs); i++)
+    circs[i] = new_or_circ(chan);
+  tt_int_op(hsdir_request_on_circuit(circs[0], post, desc_str), OP_EQ, 200);
+  tt_int_op(hsdir_request_on_circuit(circs[0], get, NULL), OP_EQ, 0);
+  hsdir_request_on_new_circ(chan, post, desc_str); /* Same revision. */
+  tt_i64_op(POST_METRIC("not_newer"), OP_EQ, 1);
+  hsdir_request_on_new_circ(chan, post, "hs-descriptor 3\nJUNK");
+  hsdir_request_on_new_circ(chan,
+                            "POST /tor/hs/2/publish HTTP/1.0\r\n\r\n",
+                            desc_str);
+  tt_int_op(hsdir_request_on_circuit(circs[1], get, NULL), OP_EQ, 200);
+  tt_int_op(hsdir_request_on_circuit(circs[1], post, desc_str), OP_EQ, 0);
+  chan->is_client = 1; /* A one-hop client is refused. */
+  hsdir_request_on_new_circ(chan, get, NULL);
+  hsdir_request_on_new_circ(chan, post, desc_str);
+
+  /* Requests on the DirPort (not tunneled) aren't counted. */
+  dirport = dir_connection_new(AF_INET);
+  tor_addr_from_ipv4h(&TO_CONN(dirport)->addr, 0x7f000001);
+  directory_handle_command_get(dirport, get, NULL, 0);
+  directory_handle_command_post(dirport, post, desc_str, strlen(desc_str));
+  connection_free_minimal(TO_CONN(dirport));
+
+  /* Exactly one request of each outcome. */
+  for (size_t i = 0; i < ARRAY_LENGTH(get_actions); i++)
+    tt_i64_op(GET_METRIC(get_actions[i]), OP_EQ, 1);
+  for (size_t i = 0; i < ARRAY_LENGTH(post_actions); i++)
+    tt_i64_op(POST_METRIC(post_actions[i]), OP_EQ, 1);
+
+ done:
+  UNMOCK(connection_write_to_buf_impl_);
+  circuit_free_all();
+  free_fake_channel(chan);
+  hs_descriptor_free(desc);
+  tor_free(desc_str);
+  tor_free(get);
 }
 
 /* Publish a descriptor to the HSDir, then fetch it. Check that the received
@@ -1042,6 +1149,8 @@ struct testcase_t hs_cache[] = {
   { "hsdir_revision_counter_check", test_hsdir_revision_counter_check, TT_FORK,
     NULL, NULL },
   { "upload_and_download_hs_desc", test_upload_and_download_hs_desc, TT_FORK,
+    NULL, NULL },
+  { "hsdir_get_post_metrics", test_hsdir_get_post_metrics, TT_FORK,
     NULL, NULL },
   { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },

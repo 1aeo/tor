@@ -67,6 +67,8 @@ static void fill_est_intro_cells(void);
 static void fill_est_rend_cells(void);
 static void fill_intro1_cells(void);
 static void fill_rend1_cells(void);
+static void fill_hsdir_get_values(void);
+static void fill_hsdir_post_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -241,6 +243,20 @@ static const relay_metrics_entry_t base_metrics[] =
     .name = METRICS_NAME(relay_drop_cell_total),
     .help = "Total number of DROP cell we received",
     .fill_fn = fill_relay_drop_cell,
+  },
+  {
+    .key = RELAY_METRICS_NUM_HSDIR_GET,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_hsdir_fetch_total),
+    .help = "Total number of onion service descriptor fetches we received",
+    .fill_fn = fill_hsdir_get_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_HSDIR_POST,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_hsdir_upload_total),
+    .help = "Total number of onion service descriptor uploads we received",
+    .fill_fn = fill_hsdir_post_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1261,6 +1277,81 @@ fill_relay_destroy_cell(void)
                              rentry->help, 0, NULL);
   metrics_store_entry_update(sentry,
                              (int64_t) stats_n_destroy_cells_processed);
+}
+
+/** Add one entry of the metric <b>rentry</b> per element of <b>values</b>,
+ * labeled <b>label0</b>=<b>value0</b> unless <b>label0</b> is NULL, and
+ * <b>label</b>=<b>names</b>[i]. */
+static void
+fill_labeled_values(const relay_metrics_entry_t *rentry, const char *label0,
+                    const char *value0, const char *label,
+                    const char *const *names, const uint64_t *values,
+                    size_t n_values)
+{
+  for (size_t i = 0; i < n_values; ++i) {
+    metrics_store_entry_t *sentry = metrics_store_add(
+        the_store, rentry->type, rentry->name, rentry->help, 0, NULL);
+    if (label0)
+      metrics_store_entry_add_label(sentry,
+                                    metrics_format_label(label0, value0));
+    metrics_store_entry_add_label(sentry,
+                                  metrics_format_label(label, names[i]));
+    metrics_store_entry_update(sentry, values[i]);
+  }
+}
+
+/** Onion service descriptor fetches, by outcome. */
+static uint64_t hsdir_get_actions[HSDIR_GET_ACTION_COUNT];
+/** Label values for an hsdir_get_action_t. */
+static const char *const hsdir_get_action_names[] = {
+  [HSDIR_GET_SUCCESS] = "success",
+  [HSDIR_GET_NOT_FOUND] = "not_found",
+  [HSDIR_GET_SINGLE_HOP] = "single_hop",
+  [HSDIR_GET_REFUSED] = "refused",
+};
+
+/** Count an onion service descriptor fetch by its outcome <b>action</b>. */
+void
+relay_increment_hsdir_get_action(hsdir_get_action_t action)
+{
+  hsdir_get_actions[action]++;
+}
+
+/** Fill function for the RELAY_METRICS_NUM_HSDIR_GET metric. */
+static void
+fill_hsdir_get_values(void)
+{
+  fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_HSDIR_GET], NULL, NULL,
+                      "action", hsdir_get_action_names, hsdir_get_actions,
+                      HSDIR_GET_ACTION_COUNT);
+}
+
+/** Onion service descriptor uploads, by outcome. */
+static uint64_t hsdir_post_actions[HSDIR_POST_ACTION_COUNT];
+/** Label values for an hsdir_post_action_t. */
+static const char *const hsdir_post_action_names[] = {
+  [HSDIR_POST_SUCCESS] = "success",
+  [HSDIR_POST_BAD_URL] = "bad_url",
+  [HSDIR_POST_INVALID] = "invalid",
+  [HSDIR_POST_NOT_NEWER] = "not_newer",
+  [HSDIR_POST_SINGLE_HOP] = "single_hop",
+  [HSDIR_POST_REFUSED] = "refused",
+};
+
+/** Count an onion service descriptor upload by its outcome <b>action</b>. */
+void
+relay_increment_hsdir_post_action(hsdir_post_action_t action)
+{
+  hsdir_post_actions[action]++;
+}
+
+/** Fill function for the RELAY_METRICS_NUM_HSDIR_POST metric. */
+static void
+fill_hsdir_post_values(void)
+{
+  fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_HSDIR_POST], NULL, NULL,
+                      "action", hsdir_post_action_names, hsdir_post_actions,
+                      HSDIR_POST_ACTION_COUNT);
 }
 
 /** Fill the metrics store for the RELAY_METRICS_CIRC_DROP_CELL counter. */

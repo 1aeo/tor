@@ -376,11 +376,12 @@ cache_clean_v3_as_dir(time_t now, time_t global_cutoff)
 }
 
 /** Given an encoded descriptor, store it in the directory cache depending on
- * which version it is. Return a negative value on error. On success, 0 is
- * returned. */
+ * which version it is. On success, 0 is returned. Return -2 if the descriptor
+ * is valid but not newer than the one in our cache, else -1 on error. */
 int
 hs_cache_store_as_dir(const char *desc)
 {
+  int ret = -1;
   hs_cache_dir_descriptor_t *dir_desc = NULL;
 
   tor_assert(desc);
@@ -399,6 +400,7 @@ hs_cache_store_as_dir(const char *desc)
   case HS_VERSION_THREE:
   default:
     if (cache_store_v3_as_dir(dir_desc) < 0) {
+      ret = -2;
       goto err;
     }
     break;
@@ -407,7 +409,7 @@ hs_cache_store_as_dir(const char *desc)
 
  err:
   cache_dir_desc_free(dir_desc);
-  return -1;
+  return ret;
 }
 
 /** Using the query, lookup in our directory cache the entry. If found, 1 is
