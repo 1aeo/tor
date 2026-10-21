@@ -3201,6 +3201,20 @@ MetricsPort.
     the consensus parameter. If not defined in the consensus, the value is
     0. (Default: auto)
 
+[[HSDirDescriptorFetchRate]] **HSDirDescriptorFetchRate** __NUM__::
+
+    The rate of fetches per second of each cached onion service descriptor,
+    at least 1, over which an HSDir counts them as
+    tor_relay_dos_total\{type="hsdir_fetch_over_rate"} on the MetricsPort.
+    (Default: 5)
+
+[[HSDirDescriptorFetchBurst]] **HSDirDescriptorFetchBurst** __NUM__::
+
+    The burst of fetches of each cached onion service descriptor, at least 1,
+    allowed before they count as over HSDirDescriptorFetchRate. It is also
+    the most fetches in any one second that count as within the rate.
+    (Default: 20)
+
 
 For onion services, mitigations are a work in progress and multiple options
 are currently available.

@@ -87,4 +87,12 @@ CONF_VAR(DoSConnectionConnectDefenseTimePeriod, INTERVAL, 0, "0")
  * same name. */
 CONF_VAR(HSDirRefuseUnknownPrevHop, AUTOBOOL, 0, "auto")
 
+/** Fetches per second of each cached onion service descriptor over which an
+ * HSDir counts them. */
+CONF_VAR(HSDirDescriptorFetchRate, POSINT, 0, "5")
+
+/** Burst of fetches of each cached descriptor allowed before they count as
+ * over HSDirDescriptorFetchRate. */
+CONF_VAR(HSDirDescriptorFetchBurst, POSINT, 0, "20")
+
 END_CONF_STRUCT(dos_options_t)

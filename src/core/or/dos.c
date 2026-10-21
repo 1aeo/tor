@@ -1119,6 +1119,26 @@ dos_get_num_begindir_hsdir_rejected(void)
   return begindir_hsdir_num_rejected;
 }
 
+/** Take a token from <b>bucket</b>, the fetch rate limiter of a cached onion
+ * service descriptor. Return whether it had one; count the fetch if not. */
+bool
+dos_hsdir_note_desc_fetch(token_bucket_ctr_t *bucket)
+{
+  const dos_options_t *options = dos_get_options();
+  const uint32_t rate = MAX(options->HSDirDescriptorFetchRate, 1);
+  const uint32_t burst = MAX(options->HSDirDescriptorFetchBurst, 1);
+
+  if (!bucket->cfg.rate)
+    token_bucket_ctr_init(bucket, rate, burst,
+                          (uint32_t) monotime_coarse_absolute_sec());
+  else
+    token_bucket_ctr_adjust(bucket, rate, burst);
+  if (dos_stream_bucket_consume(bucket))
+    return true;
+  dos_note_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE);
+  return false;
+}
+
 /* General API */
 
 /* Take any appropriate actions for the given geoip entry that is about to get

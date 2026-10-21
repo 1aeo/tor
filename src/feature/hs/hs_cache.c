@@ -196,6 +196,7 @@ cache_store_v3_as_dir(hs_cache_dir_descriptor_t *desc)
      * remove the entry we currently have from our cache so we can then
      * store the new one. */
     desc->n_downloaded = cache_entry->n_downloaded;
+    desc->fetch_limiter = cache_entry->fetch_limiter;
     remove_v3_desc_as_dir(cache_entry);
     hs_cache_decrement_allocation(cache_get_dir_entry_size(cache_entry));
     cache_dir_desc_free(cache_entry);
@@ -452,6 +453,15 @@ hs_cache_mark_dowloaded_as_dir(const hs_ident_dir_conn_t *ident)
   if (entry) {
     entry->n_downloaded++;
   }
+}
+
+/** Return the fetch rate limiter of the descriptor for <b>key</b> in our
+ * directory cache, or NULL if we don't have it. */
+token_bucket_ctr_t *
+hs_cache_get_dir_fetch_limiter(const ed25519_public_key_t *key)
+{
+  hs_cache_dir_descriptor_t *entry = lookup_v3_desc_as_dir(key->pubkey);
+  return entry ? &entry->fetch_limiter : NULL;
 }
 
 /** Clean all directory caches using the current time now. */

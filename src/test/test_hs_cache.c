@@ -1515,6 +1515,95 @@ test_hsdir_prev_hop_defense(void *arg)
   free_fake_channel(chan);
 }
 
+/* HSDirs count fetches of a descriptor over HSDirDescriptorFetchRate, and
+ * still serve them. */
+static void
+test_hsdir_desc_fetch_over_rate(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  ed25519_keypair_t signing_kp;
+  hs_descriptor_t *desc = NULL;
+  char *desc_str = NULL, *get = NULL;
+  dos_options_t *dos_opts;
+  uint64_t over;
+  const uint64_t billion = 1000000000;
+  uint64_t now = 100 * billion;
+  (void) arg;
+
+  init_test();
+  monotime_enable_test_mocking();
+  monotime_coarse_set_mock_time_nsec(now);
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  get_options_mutable()->ORPort_set = 1; /* Accept descriptor uploads. */
+  dos_opts = get_dos_options(get_options_mutable());
+  dos_opts->HSDirDescriptorFetchRate = 1;
+  dos_opts->HSDirDescriptorFetchBurst = 2;
+  tt_int_op(ed25519_keypair_generate(&signing_kp, 0), OP_EQ, 0);
+  desc = hs_helper_build_hs_desc_with_ip(&signing_kp);
+  tt_int_op(hs_desc_encode_descriptor(desc, &signing_kp, NULL, &desc_str),
+            OP_EQ, 0);
+  tt_int_op(hs_cache_store_as_dir(desc_str), OP_EQ, 0);
+  tor_asprintf(&get, GET("/tor/hs/3/%s"), helper_get_hsdir_query(desc));
+
+  /* A fetch over the burst is counted, and served. */
+  for (int i = 0; i < 3; i++)
+    tt_int_op(hsdir_request_on_new_circ(chan, get, NULL), OP_EQ, 200);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE), OP_EQ, 1);
+  tt_i64_op(GET_METRIC("success"), OP_EQ, 3);
+  tt_i64_op(DOS_METRIC("hsdir_fetch_over_rate"), OP_EQ, 1);
+
+  /* The bucket is kept when the descriptor is replaced. */
+  desc->plaintext_data.revision_counter++;
+  tor_free(desc_str);
+  tt_int_op(hs_desc_encode_descriptor(desc, &signing_kp, NULL, &desc_str),
+            OP_EQ, 0);
+  tt_int_op(hs_cache_store_as_dir(desc_str), OP_EQ, 0);
+  tt_int_op(hsdir_request_on_new_circ(chan, get, NULL), OP_EQ, 200);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE), OP_EQ, 2);
+
+  /* A second later, one more fetch is within the rate. */
+  monotime_coarse_set_mock_time_nsec(now += billion);
+  hsdir_request_on_new_circ(chan, get, NULL);
+  hsdir_request_on_new_circ(chan, get, NULL);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE), OP_EQ, 3);
+
+  /* New limits apply to cached descriptors, and 0 means 1. */
+  dos_opts->HSDirDescriptorFetchBurst = 3;
+  monotime_coarse_set_mock_time_nsec(now += 100 * billion);
+  over = dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE);
+  for (int i = 0; i < 5; i++)
+    hsdir_request_on_new_circ(chan, get, NULL);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE), OP_EQ, over + 2);
+  dos_opts->HSDirDescriptorFetchRate = 0;
+  dos_opts->HSDirDescriptorFetchBurst = 0;
+  monotime_coarse_set_mock_time_nsec(now += 100 * billion);
+  over = dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE);
+  for (int i = 0; i < 5; i++)
+    hsdir_request_on_new_circ(chan, get, NULL);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE), OP_EQ, over + 4);
+
+  /* A new rate alone applies too: three more fetches a second later. */
+  dos_opts->HSDirDescriptorFetchBurst = 5;
+  monotime_coarse_set_mock_time_nsec(now += 100 * billion);
+  for (int i = 0; i < 5; i++)
+    hsdir_request_on_new_circ(chan, get, NULL);
+  dos_opts->HSDirDescriptorFetchRate = 3;
+  monotime_coarse_set_mock_time_nsec(now += billion);
+  over = dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE);
+  for (int i = 0; i < 4; i++)
+    hsdir_request_on_new_circ(chan, get, NULL);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE), OP_EQ, over + 1);
+
+ done:
+  monotime_disable_test_mocking();
+  UNMOCK(connection_write_to_buf_impl_);
+  circuit_free_all();
+  free_fake_channel(chan);
+  hs_descriptor_free(desc);
+  tor_free(desc_str);
+  tor_free(get);
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -1544,6 +1633,8 @@ struct testcase_t hs_cache[] = {
   { "hsdir_prev_hop_counter", test_hsdir_prev_hop_counter, TT_FORK,
     NULL, NULL },
   { "hsdir_prev_hop_defense", test_hsdir_prev_hop_defense, TT_FORK,
+    NULL, NULL },
+  { "hsdir_desc_fetch_over_rate", test_hsdir_desc_fetch_over_rate, TT_FORK,
     NULL, NULL },
   { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },

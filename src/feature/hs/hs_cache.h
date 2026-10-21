@@ -16,6 +16,7 @@
 #include "feature/hs/hs_ident.h"
 #include "feature/rend/rendcommon.h"
 #include "feature/nodelist/torcert.h"
+#include "lib/evloop/token_bucket.h"
 
 struct ed25519_public_key_t;
 
@@ -73,6 +74,8 @@ typedef struct hs_cache_dir_descriptor_t {
    * heuristic for the OOM cache cleaning. It is very large so we avoid an kind
    * of possible wrapping. */
   uint64_t n_downloaded;
+  /** Counts fetches of this descriptor over HSDirDescriptorFetchRate. */
+  token_bucket_ctr_t fetch_limiter;
 } hs_cache_dir_descriptor_t;
 
 /* Public API */
@@ -98,6 +101,8 @@ int hs_cache_store_as_dir(const char *desc);
 int hs_cache_lookup_as_dir(uint32_t version, const char *query,
                            const char **desc_out);
 void hs_cache_mark_dowloaded_as_dir(const hs_ident_dir_conn_t *ident);
+token_bucket_ctr_t *hs_cache_get_dir_fetch_limiter(
+                                    const struct ed25519_public_key_t *key);
 
 const hs_descriptor_t *
 hs_cache_lookup_as_client(const struct ed25519_public_key_t *key);

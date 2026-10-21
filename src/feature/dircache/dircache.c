@@ -1469,6 +1469,7 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
   const char *desc_str = NULL;
   const char *pubkey_str = NULL;
   const char *url = args->url;
+  ed25519_public_key_t blinded_key;
 
   if (dir_conn_is_closing(conn)) {
     goto done;
@@ -1502,6 +1503,11 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
     goto done;
   }
 
+  /* Decode blinded key. This is certain to work else
+   * hs_cache_lookup_as_dir() would have failed. */
+  ed25519_public_from_base64(&blinded_key, pubkey_str);
+  dos_hsdir_note_desc_fetch(hs_cache_get_dir_fetch_limiter(&blinded_key));
+
   /* Found requested descriptor! Pass it to this nice client. */
   relay_increment_hsdir_get_action(HSDIR_GET_SUCCESS);
   write_http_response_header(conn, strlen(desc_str), NO_METHOD, 0);
@@ -1510,13 +1516,7 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
   /* We have successfully written the descriptor on the connection outbuf so
    * save this query identifier into the dir_connection_t in order
    * to associate it to the descriptor once the response is written out. */
-  {
-    /* Decode blinded key. This is certain to work else
-     * hs_cache_lookup_as_dir() would have failed. */
-    ed25519_public_key_t blinded_key;
-    ed25519_public_from_base64(&blinded_key, pubkey_str);
-    conn->hs_ident = hs_ident_server_dir_conn_new(&blinded_key);
-  }
+  conn->hs_ident = hs_ident_server_dir_conn_new(&blinded_key);
 
  done:
   return 0;

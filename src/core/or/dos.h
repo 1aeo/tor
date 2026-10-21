@@ -89,6 +89,9 @@ typedef enum dos_dir_stat_t {
   /** Onion service directory requests over an anonymous circuit, and the
    * first on it, whose previous hop is not a known relay. */
   DOS_DIR_HSDIR_UNKNOWN_PREV_HOP,
+  /** Fetches of a cached onion service descriptor over
+   * HSDirDescriptorFetchRate. */
+  DOS_DIR_HSDIR_FETCH_OVER_RATE,
 
   DOS_DIR_STAT_COUNT
 } dos_dir_stat_t;
@@ -96,6 +99,7 @@ typedef enum dos_dir_stat_t {
 void dos_note_dir_stat(dos_dir_stat_t stat);
 uint64_t dos_get_dir_stat(dos_dir_stat_t stat);
 int dos_should_refuse_unknown_hsdir_prev_hop(void);
+bool dos_hsdir_note_desc_fetch(token_bucket_ctr_t *bucket);
 void dos_note_circ_max_outq(const channel_t *chan);
 void dos_note_begindir_hsdir_rejected(void);
 
