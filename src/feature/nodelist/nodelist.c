@@ -770,13 +770,14 @@ nodelist_set_consensus(const networkstatus_t *ns)
       node->is_stable = rs->is_stable;
       node->is_possible_guard = rs->is_possible_guard;
       node->is_exit = rs->is_exit;
-      node->is_middle_only = rs->is_middle_only;
       if (!authdir) {
-        /* Authdirs treat is_bad_exit specially in that they only assign
-         * it when the descriptor arrives. So when a dir auth is reading
-         * the flags from an existing consensus, don't believe the bit
-         * here, else it will get stuck 'on' forever. */
+        /* Authdirs treat is_bad_exit and is_middle_only specially in
+         * that they only assign it when the descriptor arrives and when
+         * reloading. So when a dir auth is reading the flags from an
+         * existing consensus, don't believe the bit here, else it will
+         * get stuck with the value from the consensus for too long. */
         node->is_bad_exit = rs->is_bad_exit;
+        node->is_middle_only = rs->is_middle_only;
       }
       node->is_hs_dir = rs->is_hs_dir;
       node->ipv6_preferred = 0;
