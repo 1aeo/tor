@@ -448,84 +448,32 @@ static void
 fill_dos_values(void)
 {
   const relay_metrics_entry_t *rentry = &base_metrics[RELAY_METRICS_NUM_DOS];
-  metrics_store_entry_t *sentry = metrics_store_add(
-      the_store, rentry->type, rentry->name, rentry->help, 0, NULL);
+  const struct {
+    const char *type;
+    uint64_t value;
+  } entries[] = {
+    { "circuit_rejected", dos_get_num_cc_rejected() },
+    { "circuit_killed_max_cell", stats_n_circ_max_cell_reached },
+    { "circuit_killed_max_cell_outq", stats_n_circ_max_cell_outq_reached },
+    { "marked_address", dos_get_num_cc_marked_addr() },
+    { "marked_address_maxq", dos_get_num_cc_marked_addr_maxq() },
+    { "conn_rejected", dos_get_num_conn_addr_connect_rejected() },
+    { "concurrent_conn_rejected", dos_get_num_conn_addr_rejected() },
+    { "single_hop_refused", dos_get_num_single_hop_refused() },
+    { "introduce2_rejected", hs_dos_get_intro2_rejected_count() },
+    { "stream_rejected", dos_get_num_stream_rejected() },
+    { "begindir_rejected", dos_get_num_begindir_rejected() },
+    { "begindir_rate_rejected", dos_get_num_begindir_rate_rejected() },
+    { "begindir_hsdir_rejected", dos_get_num_begindir_hsdir_rejected() },
+  };
 
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "circuit_rejected"));
-  metrics_store_entry_update(sentry, dos_get_num_cc_rejected());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "circuit_killed_max_cell"));
-  metrics_store_entry_update(sentry, stats_n_circ_max_cell_reached);
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "circuit_killed_max_cell_outq"));
-  metrics_store_entry_update(sentry, stats_n_circ_max_cell_outq_reached);
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "marked_address"));
-  metrics_store_entry_update(sentry, dos_get_num_cc_marked_addr());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "marked_address_maxq"));
-  metrics_store_entry_update(sentry, dos_get_num_cc_marked_addr_maxq());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "conn_rejected"));
-  metrics_store_entry_update(sentry, dos_get_num_conn_addr_connect_rejected());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "concurrent_conn_rejected"));
-  metrics_store_entry_update(sentry, dos_get_num_conn_addr_rejected());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "single_hop_refused"));
-  metrics_store_entry_update(sentry, dos_get_num_single_hop_refused());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "introduce2_rejected"));
-  metrics_store_entry_update(sentry, hs_dos_get_intro2_rejected_count());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "stream_rejected"));
-  metrics_store_entry_update(sentry, dos_get_num_stream_rejected());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "begindir_rejected"));
-  metrics_store_entry_update(sentry, dos_get_num_begindir_rejected());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "begindir_rate_rejected"));
-  metrics_store_entry_update(sentry, dos_get_num_begindir_rate_rejected());
-
-  sentry = metrics_store_add(the_store, rentry->type, rentry->name,
-                             rentry->help, 0, NULL);
-  metrics_store_entry_add_label(sentry,
-          metrics_format_label("type", "begindir_hsdir_rejected"));
-  metrics_store_entry_update(sentry, dos_get_num_begindir_hsdir_rejected());
+  for (size_t i = 0; i < ARRAY_LENGTH(entries); i++) {
+    metrics_store_entry_t *sentry = metrics_store_add(
+        the_store, rentry->type, rentry->name, rentry->help, 0, NULL);
+    metrics_store_entry_add_label(sentry,
+            metrics_format_label("type", entries[i].type));
+    metrics_store_entry_update(sentry, entries[i].value);
+  }
 }
 
 /** Fill function for the RELAY_METRICS_CC_COUNTERS metric. */
