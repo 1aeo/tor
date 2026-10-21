@@ -349,6 +349,8 @@ typedef struct url_table_ent_t {
   const char *string;
   int is_prefix;
   int (*handler)(dir_connection_t *conn, const get_handler_args_t *args);
+  /** How tor_relay_begindir_request_total counts the request. */
+  dir_request_type_t type;
 } url_table_ent_t;
 
 static int handle_get_frontpage(dir_connection_t *conn,
@@ -372,19 +374,24 @@ static int handle_get_next_bandwidth(dir_connection_t *conn,
 
 /** Table for handling GET requests. */
 static const url_table_ent_t url_table[] = {
-  { "/tor/", 0, handle_get_frontpage },
-  { "/tor/status-vote/current/consensus", 1, handle_get_current_consensus },
-  { "/tor/status-vote/current/", 1, handle_get_status_vote },
-  { "/tor/status-vote/next/bandwidth", 0, handle_get_next_bandwidth },
-  { "/tor/status-vote/next/", 1, handle_get_status_vote },
-  { "/tor/micro/d/", 1, handle_get_microdesc },
-  { "/tor/server/", 1, handle_get_descriptor },
-  { "/tor/extra/", 1, handle_get_descriptor },
-  { "/tor/keys/", 1, handle_get_keys },
-  { "/tor/hs/3/", 1, handle_get_hs_descriptor_v3 },
-  { "/tor/robots.txt", 0, handle_get_robots },
-  { "/tor/networkstatus-bridges", 0, handle_get_networkstatus_bridges },
-  { NULL, 0, NULL },
+  { "/tor/", 0, handle_get_frontpage, DIR_REQUEST_OTHER_GET },
+  { "/tor/status-vote/current/consensus", 1, handle_get_current_consensus,
+    DIR_REQUEST_CONSENSUS },
+  { "/tor/status-vote/current/", 1, handle_get_status_vote,
+    DIR_REQUEST_OTHER_GET },
+  { "/tor/status-vote/next/bandwidth", 0, handle_get_next_bandwidth,
+    DIR_REQUEST_OTHER_GET },
+  { "/tor/status-vote/next/", 1, handle_get_status_vote,
+    DIR_REQUEST_OTHER_GET },
+  { "/tor/micro/d/", 1, handle_get_microdesc, DIR_REQUEST_MICRODESC },
+  { "/tor/server/", 1, handle_get_descriptor, DIR_REQUEST_DESCRIPTOR },
+  { "/tor/extra/", 1, handle_get_descriptor, DIR_REQUEST_DESCRIPTOR },
+  { "/tor/keys/", 1, handle_get_keys, DIR_REQUEST_OTHER_GET },
+  { "/tor/hs/3/", 1, handle_get_hs_descriptor_v3, DIR_REQUEST_HS_GET },
+  { "/tor/robots.txt", 0, handle_get_robots, DIR_REQUEST_OTHER_GET },
+  { "/tor/networkstatus-bridges", 0, handle_get_networkstatus_bridges,
+    DIR_REQUEST_OTHER_GET },
+  { NULL, 0, NULL, DIR_REQUEST_OTHER_GET },
 };
 
 /** Helper function: called when a dirserver gets a complete HTTP GET
@@ -411,6 +418,7 @@ directory_handle_command_get,(dir_connection_t *conn, const char *headers,
   conn->base_.state = DIR_CONN_STATE_SERVER_WRITING;
 
   if (parse_http_url(headers, &url) < 0) {
+    relay_note_dir_request(conn, DIR_REQUEST_UNPARSED);
     write_short_http_response(conn, 400, "Bad request");
     return 0;
   }
@@ -467,12 +475,14 @@ directory_handle_command_get,(dir_connection_t *conn, const char *headers,
       match = !strcmp(url, url_table[i].string);
     }
     if (match) {
+      relay_note_dir_request(conn, url_table[i].type);
       result = url_table[i].handler(conn, &args);
       goto done;
     }
   }
 
   /* we didn't recognize the url */
+  relay_note_dir_request(conn, DIR_REQUEST_OTHER_GET);
   write_short_http_response(conn, 404, "Not found");
   result = 0;
 
@@ -1681,11 +1691,13 @@ directory_handle_command_post,(dir_connection_t *conn, const char *headers,
     log_info(LD_DIR, "Rejected dir post request from %s "
              "since we're not a public relay.",
              connection_describe_peer(TO_CONN(conn)));
+    relay_note_dir_request(conn, DIR_REQUEST_OTHER_POST);
     write_short_http_response(conn, 503, "Not acting as a public relay");
     goto done;
   }
 
   if (parse_http_url(headers, &url) < 0) {
+    relay_note_dir_request(conn, DIR_REQUEST_UNPARSED);
     write_short_http_response(conn, 400, "Bad request");
     return 0;
   }
@@ -1695,6 +1707,7 @@ directory_handle_command_post,(dir_connection_t *conn, const char *headers,
    * (which also tests for encrypted). We do not allow single-hop client to
    * post a descriptor onto an HSDir. */
   if (!strcmpstart(url, "/tor/hs/")) {
+    relay_note_dir_request(conn, DIR_REQUEST_HS_POST);
     if (dir_conn_is_closing(conn)) {
       goto done;
     }
@@ -1719,6 +1732,7 @@ directory_handle_command_post,(dir_connection_t *conn, const char *headers,
     write_short_http_response(conn, code, msg);
     goto done;
   }
+  relay_note_dir_request(conn, DIR_REQUEST_OTHER_POST);
 
   if (!authdir_mode(options)) {
     /* we just provide cached directories; we don't want to
@@ -1851,6 +1865,8 @@ directory_handle_command(dir_connection_t *conn)
   /* Don't parse queued requests whose stream or circuit is gone.
    * The caller will close the directory connection without a response. */
   if (dir_conn_is_closing(conn)) {
+    relay_note_dir_request(conn, connection_get_inbuf_len(TO_CONN(conn)) ?
+                           DIR_REQUEST_CIRCUIT_DEAD : DIR_REQUEST_NO_REQUEST);
     return -1;
   }
   /* Non-authorities only accept HS descriptor posts, so don't buffer a body
@@ -1887,6 +1903,8 @@ directory_handle_command(dir_connection_t *conn)
     log_fn(LOG_PROTOCOL_WARN, LD_PROTOCOL,
            "Got headers %s with unknown command. Closing.",
            escaped(headers));
+    /* We've already taken the request off the inbuf. */
+    relay_note_dir_request(conn, DIR_REQUEST_UNPARSED);
     r = -1;
   }
 

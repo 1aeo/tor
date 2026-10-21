@@ -4,3 +4,11 @@
       that are valid but not newer than the cached descriptor, which happens
       without any fault when several instances publish for the same address,
       are counted apart from invalid ones. Part of ticket 41339.
+    - Count each tunneled directory request once, by what it asked for, as
+      tor_relay_begindir_request_total{type}. A request dropped unread because
+      its stream or circuit was already closing is counted as type
+      "circuit_dead", and one too large to read, such as an oversized
+      descriptor upload, as "unparsed". Count the tunneled directory responses
+      fully handed to their stream, as
+      tor_relay_begindir_response_total{type="hs_descriptor"|"other"}. Part of
+      ticket 41339.

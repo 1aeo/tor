@@ -44,3 +44,16 @@ relay_increment_rend1_action(rend1_action_t action)
 {
   (void)action;
 }
+
+void
+relay_note_dir_request(struct dir_connection_t *conn, dir_request_type_t type)
+{
+  (void)conn;
+  (void)type;
+}
+
+void
+relay_note_dir_response(const struct dir_connection_t *conn)
+{
+  (void)conn;
+}

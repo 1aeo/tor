@@ -17,6 +17,7 @@
 #include "feature/dircommon/directory.h"
 #include "feature/dircommon/fp_pair.h"
 #include "feature/hs/hs_cache.h"
+#include "feature/relay/relay_metrics.h"
 #include "feature/stats/geoip_stats.h"
 #include "lib/buf/buffers.h"
 #include "lib/compress/compress.h"
@@ -529,6 +530,14 @@ connection_dir_about_to_close(dir_connection_t *dir_conn)
 {
   connection_t *conn = TO_CONN(dir_conn);
 
+  /* Count a tunneled request we haven't counted yet: nothing arrived, or
+   * part of one. Every request we answer is counted before its answer. */
+  if (DIR_CONN_IS_SERVER(conn))
+    relay_note_dir_request(dir_conn,
+                           conn->state == DIR_CONN_STATE_SERVER_COMMAND_WAIT &&
+                           !connection_get_inbuf_len(conn) ?
+                           DIR_REQUEST_NO_REQUEST : DIR_REQUEST_UNPARSED);
+
   if (conn->state < DIR_CONN_STATE_CLIENT_FINISHED) {
     /* It's a directory connection and connecting or fetching
      * failed: forget about this router, and maybe try again. */
@@ -578,6 +587,7 @@ connection_dir_finished_flushing(dir_connection_t *conn)
         if (conn->hs_ident) {
           hs_cache_mark_dowloaded_as_dir(conn->hs_ident);
         }
+        relay_note_dir_response(conn);
         connection_mark_for_close(TO_CONN(conn));
       }
       return 0;

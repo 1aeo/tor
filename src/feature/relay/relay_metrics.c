@@ -23,12 +23,14 @@
 
 #include "app/config/config.h"
 
+#include "lib/cc/ctassert.h"
 #include "lib/container/smartlist.h"
 #include "lib/log/util_bug.h"
 #include "lib/malloc/malloc.h"
 #include "lib/math/fp.h"
 #include "lib/metrics/metrics_store.h"
 
+#include "feature/dircommon/dir_connection_st.h"
 #include "feature/hs/hs_dos.h"
 #include "feature/nodelist/nodelist.h"
 #include "feature/nodelist/node_st.h"
@@ -69,6 +71,8 @@ static void fill_intro1_cells(void);
 static void fill_rend1_cells(void);
 static void fill_hsdir_get_values(void);
 static void fill_hsdir_post_values(void);
+static void fill_begindir_request_values(void);
+static void fill_begindir_response_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -257,6 +261,20 @@ static const relay_metrics_entry_t base_metrics[] =
     .name = METRICS_NAME(relay_hsdir_upload_total),
     .help = "Total number of onion service descriptor uploads we received",
     .fill_fn = fill_hsdir_post_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_BEGINDIR_REQUESTS,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_begindir_request_total),
+    .help = "Total number of tunneled directory requests we received",
+    .fill_fn = fill_begindir_request_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_BEGINDIR_RESPONSES,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_begindir_response_total),
+    .help = "Total number of tunneled directory responses we handed off",
+    .fill_fn = fill_begindir_response_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1352,6 +1370,72 @@ fill_hsdir_post_values(void)
   fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_HSDIR_POST], NULL, NULL,
                       "action", hsdir_post_action_names, hsdir_post_actions,
                       HSDIR_POST_ACTION_COUNT);
+}
+
+/** Tunneled directory requests, by type. */
+static uint64_t dir_requests[DIR_REQUEST_TYPE_COUNT];
+/** Label values for a dir_request_type_t. */
+static const char *const dir_request_names[] = {
+  [DIR_REQUEST_HS_GET] = "hs_get",
+  [DIR_REQUEST_HS_POST] = "hs_post",
+  [DIR_REQUEST_CONSENSUS] = "consensus",
+  [DIR_REQUEST_MICRODESC] = "microdesc",
+  [DIR_REQUEST_DESCRIPTOR] = "descriptor",
+  [DIR_REQUEST_OTHER_GET] = "other_get",
+  [DIR_REQUEST_OTHER_POST] = "other_post",
+  [DIR_REQUEST_UNPARSED] = "unparsed",
+  [DIR_REQUEST_NO_REQUEST] = "no_request",
+  [DIR_REQUEST_CIRCUIT_DEAD] = "circuit_dead",
+};
+/* A directory connection keeps one more than its request type in four
+ * bits. */
+CTASSERT(DIR_REQUEST_TYPE_COUNT < 16);
+
+/** Count the request on the tunneled directory server connection <b>conn</b>
+ * as <b>type</b>, once: later calls for <b>conn</b> do nothing. DirPort
+ * connections aren't counted. */
+void
+relay_note_dir_request(dir_connection_t *conn, dir_request_type_t type)
+{
+  if (!TO_CONN(conn)->linked || conn->request_type)
+    return;
+  conn->request_type = type + 1;
+  dir_requests[type]++;
+}
+
+/** Fill function for the RELAY_METRICS_NUM_BEGINDIR_REQUESTS metric. */
+static void
+fill_begindir_request_values(void)
+{
+  fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_BEGINDIR_REQUESTS],
+                      NULL, NULL, "type", dir_request_names, dir_requests,
+                      DIR_REQUEST_TYPE_COUNT);
+}
+
+/** Tunneled directory responses fully handed to their stream (which doesn't
+ * mean that the client received them): onion service descriptors, and
+ * anything else, including error responses. */
+static uint64_t dir_responses[2];
+
+/** Count the response of the tunneled directory server connection
+ * <b>conn</b>, now fully handed to its stream. DirPort connections aren't
+ * counted. */
+void
+relay_note_dir_response(const dir_connection_t *conn)
+{
+  if (conn->base_.linked)
+    dir_responses[conn->hs_ident ? 0 : 1]++;
+}
+
+/** Fill function for the RELAY_METRICS_NUM_BEGINDIR_RESPONSES metric. */
+static void
+fill_begindir_response_values(void)
+{
+  static const char *const names[] = { "hs_descriptor", "other" };
+
+  fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_BEGINDIR_RESPONSES],
+                      NULL, NULL, "type", names, dir_responses,
+                      ARRAY_LENGTH(names));
 }
 
 /** Fill the metrics store for the RELAY_METRICS_CIRC_DROP_CELL counter. */

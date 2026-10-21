@@ -67,6 +67,10 @@ typedef enum {
   RELAY_METRICS_NUM_HSDIR_GET,
   /** Onion service descriptor uploads, by outcome. */
   RELAY_METRICS_NUM_HSDIR_POST,
+  /** Tunneled directory requests, by type. */
+  RELAY_METRICS_NUM_BEGINDIR_REQUESTS,
+  /** Tunneled directory responses handed to their stream, by type. */
+  RELAY_METRICS_NUM_BEGINDIR_RESPONSES,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */
@@ -181,5 +185,38 @@ typedef enum {
 } hsdir_post_action_t;
 
 void relay_increment_hsdir_post_action(hsdir_post_action_t);
+
+/** What a tunneled (BEGIN_DIR) directory request asked for. */
+typedef enum {
+  /** GET /tor/hs/3/: an onion service descriptor fetch. */
+  DIR_REQUEST_HS_GET,
+  /** POST /tor/hs/: an onion service descriptor upload. */
+  DIR_REQUEST_HS_POST,
+  /** GET /tor/status-vote/current/consensus: a consensus. */
+  DIR_REQUEST_CONSENSUS,
+  /** GET /tor/micro/d/: microdescriptors. */
+  DIR_REQUEST_MICRODESC,
+  /** GET /tor/server/ or /tor/extra/: relay descriptors. */
+  DIR_REQUEST_DESCRIPTOR,
+  /** Any other GET that parsed, including those we answer with 404. */
+  DIR_REQUEST_OTHER_GET,
+  /** Any other POST, including every POST to a relay that isn't public. */
+  DIR_REQUEST_OTHER_POST,
+  /** A request that didn't parse, was too large or had an unknown method, or
+   * the start of one when the connection timed out. */
+  DIR_REQUEST_UNPARSED,
+  /** Nothing at all before the stream or the connection closed. */
+  DIR_REQUEST_NO_REQUEST,
+  /** A request, or the start of one, that we didn't read because its stream
+   * or circuit was already closing. */
+  DIR_REQUEST_CIRCUIT_DEAD,
+
+  DIR_REQUEST_TYPE_COUNT
+} dir_request_type_t;
+
+struct dir_connection_t;
+void relay_note_dir_request(struct dir_connection_t *conn,
+                            dir_request_type_t type);
+void relay_note_dir_response(const struct dir_connection_t *conn);
 
 #endif /* !defined(TOR_FEATURE_RELAY_RELAY_METRICS_H) */

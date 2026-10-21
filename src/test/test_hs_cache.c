@@ -25,6 +25,7 @@
 #include "core/mainloop/connection.h"
 #include "core/proto/proto_http.h"
 #include "core/or/circuitlist.h"
+#include "core/or/connection_edge.h"
 #include "core/or/channel.h"
 #include "core/or/dos.h"
 #include "feature/relay/relay_metrics.h"
@@ -559,6 +560,9 @@ get_metric(const char *name, const char *key, const char *value)
   get_metric(METRICS_NAME(relay_hsdir_fetch_total), "action", (action))
 #define POST_METRIC(action) \
   get_metric(METRICS_NAME(relay_hsdir_upload_total), "action", (action))
+/* tor_relay_begindir_request_total{type} */
+#define REQ_SUM(type) \
+  get_metric(METRICS_NAME(relay_begindir_request_total), "type", (type))
 
 /* Return a new OR circuit whose previous hop is <b>chan</b>. */
 static or_circuit_t *
@@ -631,11 +635,13 @@ test_hsdir_get_post_metrics(void *arg)
   directory_handle_command_post(dirport, post, desc_str, strlen(desc_str));
   connection_free_minimal(TO_CONN(dirport));
 
-  /* Exactly one request of each outcome. */
+  /* Exactly one request of each outcome, each also counted by type. */
   for (size_t i = 0; i < ARRAY_LENGTH(get_actions); i++)
     tt_i64_op(GET_METRIC(get_actions[i]), OP_EQ, 1);
   for (size_t i = 0; i < ARRAY_LENGTH(post_actions); i++)
     tt_i64_op(POST_METRIC(post_actions[i]), OP_EQ, 1);
+  tt_i64_op(REQ_SUM("hs_get"), OP_EQ, 4);
+  tt_i64_op(REQ_SUM("hs_post"), OP_EQ, 6);
 
  done:
   UNMOCK(connection_write_to_buf_impl_);
@@ -1132,6 +1138,191 @@ test_downloaded_counter_as_dir(void *arg)
   tor_free(desc_str);
 }
 
+#define DIR_RESPONSE_METRIC(type) \
+  get_metric(METRICS_NAME(relay_begindir_response_total), "type", (type))
+
+/* Make a tunneled directory server connection waiting for a request, with
+ * <b>input</b> (if any) on its inbuf. */
+static dir_connection_t *
+new_waiting_dir_conn(const char *input)
+{
+  dir_connection_t *conn = dir_connection_new(AF_INET);
+
+  TO_CONN(conn)->purpose = DIR_PURPOSE_SERVER;
+  TO_CONN(conn)->state = DIR_CONN_STATE_SERVER_COMMAND_WAIT;
+  TO_CONN(conn)->linked = 1;
+  tor_addr_from_ipv4h(&TO_CONN(conn)->addr, 0x7f000001);
+  if (input)
+    buf_add(TO_CONN(conn)->inbuf, input, strlen(input));
+  return conn;
+}
+
+/* Link <b>conn</b>, from new_waiting_dir_conn(), to a new stream on a new
+ * circuit: directory_handle_command() drops a request on a stream that is
+ * gone or closing without reading it. Return the stream. */
+static edge_connection_t *
+open_waiting_stream(dir_connection_t *conn)
+{
+  edge_connection_t *edge = edge_connection_new(CONN_TYPE_EXIT, AF_INET);
+
+  connection_link_connections(TO_CONN(conn), TO_CONN(edge));
+  edge->on_circuit = TO_CIRCUIT(or_circuit_new(0, NULL));
+  return edge;
+}
+
+/* Close <b>conn</b>, from new_waiting_dir_conn(), then free it and its
+ * <b>stream</b>, if any. */
+static void
+close_waiting_dir_conn(dir_connection_t *conn, edge_connection_t *stream)
+{
+  connection_dir_about_to_close(conn);
+  connection_free_minimal(TO_CONN(conn));
+  if (stream)
+    connection_free_minimal(TO_CONN(stream));
+}
+
+/* Tunneled directory requests are counted once, by what they asked for, and
+ * responses once they are handed to their stream; direct (DirPort)
+ * connections are not counted. */
+static void
+test_dir_request_response_metrics(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  dir_connection_t *conn = dir_connection_new(AF_INET), *dirport = NULL;
+  dir_connection_t *waiting;
+  edge_connection_t *stream;
+  ed25519_public_key_t pk;
+  (void) arg;
+
+  init_test();
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  MOCK(connection_mark_for_close_internal_, hsdir_mock_mark_for_close);
+  get_options_mutable()->ORPort_set = 1; /* Accept directory posts. */
+
+  hsdir_request_on_new_circ(chan, "POST /tor/ HTTP/1.0\r\n\r\n", "x");
+  hsdir_request_on_new_circ(chan, "GET\r\n\r\n", NULL);
+  hsdir_request_on_new_circ(chan, "POST\r\n\r\n", "x");
+  /* The same requests on a DirPort connection aren't counted. */
+  dirport = dir_connection_new(AF_INET);
+  tor_addr_from_ipv4h(&TO_CONN(dirport)->addr, 0x7f000001);
+  directory_handle_command_post(dirport, "POST /tor/ HTTP/1.0\r\n\r\n",
+                                "x", 1);
+  directory_handle_command_get(dirport, "GET\r\n\r\n", NULL, 0);
+  directory_handle_command_post(dirport, "POST\r\n\r\n", "x", 1);
+  tt_int_op(dirport->request_type, OP_EQ, 0);
+  tt_i64_op(REQ_SUM("other_post"), OP_EQ, 1);
+  tt_i64_op(REQ_SUM("unparsed"), OP_EQ, 2);
+
+  /* An unknown method is counted when we refuse it, and only then: its
+   * request is already off the inbuf when the connection closes. */
+  waiting = new_waiting_dir_conn("PUT /tor/ HTTP/1.0\r\n\r\n");
+  stream = open_waiting_stream(waiting);
+  tt_int_op(directory_handle_command(waiting), OP_EQ, -1);
+  tt_i64_op(REQ_SUM("unparsed"), OP_EQ, 3);
+  close_waiting_dir_conn(waiting, stream);
+  /* What a stream whose circuit is closing sent is dropped unread: a
+   * request as circuit_dead, nothing at all as no_request. */
+  for (int i = 0; i < 2; i++) {
+    waiting = new_waiting_dir_conn(i ? NULL : GET("/tor/"));
+    stream = open_waiting_stream(waiting);
+    stream->on_circuit->marked_for_close = 1;
+    tt_int_op(directory_handle_command(waiting), OP_EQ, -1);
+    close_waiting_dir_conn(waiting, stream);
+    tt_i64_op(REQ_SUM(i ? "no_request" : "circuit_dead"), OP_EQ, 1);
+  }
+  /* Closed with part of a request, or with nothing at all; a directory
+   * client connection isn't counted. */
+  close_waiting_dir_conn(new_waiting_dir_conn("GET /tor/"), NULL);
+  tt_i64_op(REQ_SUM("unparsed"), OP_EQ, 4);
+  close_waiting_dir_conn(new_waiting_dir_conn(NULL), NULL);
+  tt_i64_op(REQ_SUM("no_request"), OP_EQ, 2);
+  waiting = new_waiting_dir_conn(NULL);
+  TO_CONN(waiting)->purpose = DIR_PURPOSE_FETCH_CONSENSUS;
+  TO_CONN(waiting)->state = DIR_CONN_STATE_CLIENT_FINISHED;
+  close_waiting_dir_conn(waiting, NULL);
+  tt_i64_op(REQ_SUM("unparsed"), OP_EQ, 4);
+  /* A bridge answers a POST with a 503 before reading its URL. */
+  get_options_mutable()->BridgeRelay = 1;
+  waiting = new_waiting_dir_conn(NULL);
+  directory_handle_command_post(waiting,
+                                "POST /tor/hs/3/publish HTTP/1.0\r\n\r\n",
+                                "x", 1);
+  close_waiting_dir_conn(waiting, NULL);
+  get_options_mutable()->BridgeRelay = 0;
+  tt_i64_op(REQ_SUM("other_post"), OP_EQ, 2);
+  tt_i64_op(REQ_SUM("no_request"), OP_EQ, 2);
+
+  /* A response is counted once it has been handed to its stream, and only
+   * if tunneled. */
+  TO_CONN(conn)->purpose = DIR_PURPOSE_SERVER;
+  TO_CONN(conn)->state = DIR_CONN_STATE_SERVER_WRITING;
+  tt_int_op(connection_dir_finished_flushing(conn), OP_EQ, 0);
+  tt_i64_op(DIR_RESPONSE_METRIC("other"), OP_EQ, 0);
+  TO_CONN(conn)->linked = 1;
+  TO_CONN(conn)->marked_for_close = 0;
+  tt_int_op(connection_dir_finished_flushing(conn), OP_EQ, 0);
+  tt_i64_op(DIR_RESPONSE_METRIC("other"), OP_EQ, 1);
+  memset(&pk, 0, sizeof(pk));
+  conn->hs_ident = hs_ident_server_dir_conn_new(&pk);
+  TO_CONN(conn)->marked_for_close = 0;
+  tt_int_op(connection_dir_finished_flushing(conn), OP_EQ, 0);
+  tt_i64_op(DIR_RESPONSE_METRIC("hs_descriptor"), OP_EQ, 1);
+  tt_i64_op(DIR_RESPONSE_METRIC("other"), OP_EQ, 1);
+
+ done:
+  UNMOCK(connection_write_to_buf_impl_);
+  UNMOCK(connection_mark_for_close_internal_);
+  circuit_free_all();
+  connection_free_minimal(TO_CONN(conn));
+  if (dirport)
+    connection_free_minimal(TO_CONN(dirport));
+  free_fake_channel(chan);
+}
+
+/* Each GET that url_table matches is counted by the type of its entry, and
+ * any other as other_get. */
+static void
+test_dir_request_url_table_types(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  const struct {
+    const char *url;
+    const char *type;
+  } reqs[] = {
+    { "/tor/status-vote/current/consensus", "consensus" },
+    { "/tor/micro/d/zz", "microdesc" },
+    { "/tor/server/fp/zz", "descriptor" },
+    { "/tor/extra/fp/zz", "descriptor" },
+    { "/tor/hs/3/zz", "hs_get" },
+    { "/tor/", "other_get" },
+    { "/tor/status-vote/current/zz", "other_get" },
+    { "/tor/status-vote/next/bandwidth", "other_get" },
+    { "/tor/status-vote/next/zz", "other_get" },
+    { "/tor/keys/zz", "other_get" },
+    { "/tor/robots.txt", "other_get" },
+    { "/tor/networkstatus-bridges", "other_get" },
+    { "/tor/nothing-here", "other_get" },
+  };
+  char *req = NULL;
+  (void) arg;
+
+  init_test();
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  for (size_t i = 0; i < ARRAY_LENGTH(reqs); i++) {
+    const int64_t n0 = REQ_SUM(reqs[i].type);
+    tor_asprintf(&req, GET("%s"), reqs[i].url);
+    hsdir_request_on_new_circ(chan, req, NULL);
+    tor_free(req);
+    tt_i64_op(REQ_SUM(reqs[i].type), OP_EQ, n0 + 1);
+  }
+
+ done:
+  UNMOCK(connection_write_to_buf_impl_);
+  tor_free(req);
+  circuit_free_all();
+  free_fake_channel(chan);
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -1151,6 +1342,10 @@ struct testcase_t hs_cache[] = {
   { "upload_and_download_hs_desc", test_upload_and_download_hs_desc, TT_FORK,
     NULL, NULL },
   { "hsdir_get_post_metrics", test_hsdir_get_post_metrics, TT_FORK,
+    NULL, NULL },
+  { "dir_request_response_metrics", test_dir_request_response_metrics,
+    TT_FORK, NULL, NULL },
+  { "dir_request_url_table_types", test_dir_request_url_table_types, TT_FORK,
     NULL, NULL },
   { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },

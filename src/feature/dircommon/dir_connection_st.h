@@ -31,6 +31,9 @@ struct dir_connection_t {
   /** Is this dirconn direct, or via a multi-hop Tor circuit?
    * Direct connections can use the DirPort, or BEGINDIR over the ORPort. */
   unsigned int dirconn_direct:1;
+  /** For a tunneled (BEGIN_DIR) server connection: 0 until its request is
+   * counted, then one more than its dir_request_type_t. */
+  unsigned int request_type:4;
 
   /** If we're fetching descriptors, what router purpose shall we assign
    * to them? */
