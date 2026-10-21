@@ -4,3 +4,8 @@
       previous hop is not a known relay, by closing their circuit. Refused
       requests are counted as action "refused" in tor_relay_hsdir_fetch_total
       and tor_relay_hsdir_upload_total. Part of ticket 41339.
+    - Add the HSDirDescriptorFetchRate and HSDirDescriptorFetchBurst options.
+      An HSDir counts fetches of each cached onion service descriptor over that
+      rate as tor_relay_dos_total{type="hsdir_fetch_over_rate"} on the
+      MetricsPort, which shows whether a flood of fetches concentrates on a few
+      descriptors. Part of ticket 41339.
