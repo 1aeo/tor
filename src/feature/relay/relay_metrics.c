@@ -469,6 +469,8 @@ fill_dos_values(void)
     uint64_t value;
   } entries[] = {
     { "circuit_rejected", dos_get_num_cc_rejected() },
+    { "circuit_over_rate", dos_get_num_cc_over_rate() },
+    { "circuit_untracked", dos_get_num_cc_untracked() },
     { "circuit_killed_max_cell", stats_n_circ_max_cell_reached },
     { "circuit_killed_max_cell_outq", stats_n_circ_max_cell_outq_reached },
     { "marked_address", dos_get_num_cc_marked_addr() },

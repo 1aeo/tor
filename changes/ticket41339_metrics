@@ -27,3 +27,11 @@
       bridge), "known_relay" or "unknown_relay". This is not a hop count. Count
       BEGIN_DIR cells also by their place among their circuit's BEGIN_DIR cells
       (nth). Part of ticket 41339.
+    - Count the CREATE cells from client channels that find their address's
+      circuit creation bucket empty, as
+      tor_relay_dos_total{type="circuit_over_rate"}, marked or not, and those
+      from client addresses that have no bucket, as tor no longer tracks them
+      or, on a bridge, tracks them under a pluggable transport, as
+      {type="circuit_untracked"}, both while DoSCircuitCreationEnabled is on.
+      Together with the client CREATE cells, they bound the number of client
+      addresses from below. Part of ticket 41339.

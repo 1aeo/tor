@@ -113,6 +113,8 @@ void dos_note_begindir_hsdir_rejected(void);
 uint32_t dos_get_num_cc_marked_addr(void);
 uint32_t dos_get_num_cc_marked_addr_maxq(void);
 uint64_t dos_get_num_cc_rejected(void);
+uint64_t dos_get_num_cc_over_rate(void);
+uint64_t dos_get_num_cc_untracked(void);
 uint64_t dos_get_num_conn_addr_rejected(void);
 uint64_t dos_get_num_conn_addr_connect_rejected(void);
 uint64_t dos_get_num_single_hop_refused(void);
