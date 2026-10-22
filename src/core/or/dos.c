@@ -54,6 +54,10 @@ static int32_t dos_cc_defense_time_period;
 static uint64_t cc_num_rejected_cells;
 static uint32_t cc_num_marked_addrs;
 static uint32_t cc_num_marked_addrs_max_queue;
+/* Client CREATE cells over their address's circuit creation rate, and from
+ * client addresses we no longer track, for the MetricsPort. */
+static uint64_t cc_num_over_rate_cells;
+static uint64_t cc_num_untracked_cells;
 
 /*
  * Concurrent connection denial of service mitigation.
@@ -776,6 +780,22 @@ dos_get_num_cc_rejected(void)
   return cc_num_rejected_cells;
 }
 
+/** Return the number of CREATE cells that found their address's circuit
+ * bucket empty, whether or not the address was marked. */
+uint64_t
+dos_get_num_cc_over_rate(void)
+{
+  return cc_num_over_rate_cells;
+}
+
+/** Return the number of CREATE cells from client addresses that the geoip
+ * cache no longer tracks, so that they have no circuit bucket. */
+uint64_t
+dos_get_num_cc_untracked(void)
+{
+  return cc_num_untracked_cells;
+}
+
 /** Return the number of marked addresses. */
 uint32_t
 dos_get_num_cc_marked_addr(void)
@@ -876,6 +896,7 @@ dos_cc_new_create_cell(channel_t *chan)
     /* We can have a connection creating circuits but not tracked by the geoip
      * cache. Once this DoS subsystem is enabled, we can end up here with no
      * entry for the channel. */
+    cc_num_untracked_cells++;
     goto end;
   }
 
@@ -892,6 +913,9 @@ dos_cc_new_create_cell(channel_t *chan)
    * underflow the bucket. */
   if (entry->dos_stats.cc_stats.circuit_bucket > 0) {
     entry->dos_stats.cc_stats.circuit_bucket--;
+  } else {
+    /* Over the rate, but only marked with enough concurrent connections. */
+    cc_num_over_rate_cells++;
   }
 
   /* This is the detection. Assess at every CREATE cell if the client should

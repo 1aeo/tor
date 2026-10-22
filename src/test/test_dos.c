@@ -27,6 +27,8 @@
 #include "feature/nodelist/routerlist.h"
 #include "feature/hibernate/hibernate.h"
 #include "feature/stats/bwhist.h"
+#include "feature/relay/relay_metrics.h"
+#include "lib/metrics/metrics_store.h"
 
 #include "feature/nodelist/networkstatus_st.h"
 #include "core/or/or_circuit_st.h"
@@ -45,6 +47,22 @@
 #include "test/opts_test_helpers.h"
 
 static const uint64_t BILLION = 1000000000;
+
+/** Return tor_relay_dos_total{type="<b>type</b>"}. If there is none, fail
+ * the test and return -1. */
+static int64_t
+get_dos_metric(const char *type)
+{
+  const smartlist_t *entries =
+    metrics_store_get_all(smartlist_get(relay_metrics_get_stores(), 0),
+                          METRICS_NAME(relay_dos_total));
+  const metrics_store_entry_t *entry =
+    metrics_store_find_entry_with_label(entries,
+                                        metrics_format_label("type", type));
+  if (!entry)
+    TT_FAIL(("no series tor_relay_dos_total{type=\"%s\"}", type));
+  return entry ? metrics_store_entry_get_value(entry) : -1;
+}
 
 static networkstatus_t *dummy_ns = NULL;
 static networkstatus_t *
@@ -152,6 +170,65 @@ mock_channel_get_addr_if_possible(const channel_t *chan, tor_addr_t *addr_out)
 
  done:
   return 0;
+}
+
+/** Test that a client CREATE cell that finds its address's circuit bucket
+ * empty is counted as over the rate, even if the address has too few
+ * connections to be marked, that cells on authenticated channels are not,
+ * and that cells from an address with no geoip entry are counted as
+ * untracked. */
+static void
+test_dos_cc_over_rate(void *arg)
+{
+  channel_t *chan = tor_malloc_zero(sizeof(channel_t));
+  or_connection_t or_conn;
+  const time_t now = 1281533250; /* 2010-08-11 13:27:30 UTC */
+  uint32_t burst;
+  (void) arg;
+
+  MOCK(get_param_cc_enabled, mock_enable_dos_protection);
+  MOCK(get_param_conn_enabled, mock_enable_dos_protection);
+  MOCK(channel_get_addr_if_possible, mock_channel_get_addr_if_possible);
+  channel_init(chan);
+  chan->is_client = 1;
+  memset(&or_conn, 0, sizeof or_conn);
+  tt_int_op(AF_INET, OP_EQ,
+            tor_addr_parse(&TO_CONN(&or_conn)->addr, "18.0.0.1"));
+  update_approx_time(now); /* So the bucket doesn't refill. */
+  dos_init();
+  burst = get_param_cc_circuit_burst(NULL);
+  /* One connection, fewer than DoSCircuitCreationMinConnections. */
+  geoip_note_client_seen(GEOIP_CLIENT_CONNECT, &TO_CONN(&or_conn)->addr,
+                         NULL, now);
+  dos_new_client_conn(&or_conn, NULL);
+
+  for (uint32_t i = 0; i < burst + 3; i++)
+    dos_cc_new_create_cell(chan);
+  tt_u64_op(dos_get_num_cc_over_rate(), OP_EQ, 3);
+  tt_uint_op(dos_get_num_cc_marked_addr(), OP_EQ, 0);
+  tt_int_op(DOS_CC_DEFENSE_NONE, OP_EQ, dos_cc_get_defense_type(chan));
+  chan->is_client = 0;
+  dos_cc_new_create_cell(chan);
+  tt_u64_op(dos_get_num_cc_over_rate(), OP_EQ, 3);
+  tt_u64_op(dos_get_num_cc_untracked(), OP_EQ, 0);
+
+  /* Once its geoip entry is gone, as it is a day or two after its last new
+   * connection, the address has no bucket: its cells are counted apart. */
+  chan->is_client = 1;
+  geoip_remove_old_clients(now + 86400);
+  for (uint32_t i = 0; i < burst + 3; i++)
+    dos_cc_new_create_cell(chan);
+  tt_u64_op(dos_get_num_cc_over_rate(), OP_EQ, 3);
+  tt_u64_op(dos_get_num_cc_untracked(), OP_EQ, burst + 3);
+  tt_i64_op(get_dos_metric("circuit_over_rate"), OP_EQ, 3);
+  tt_i64_op(get_dos_metric("circuit_untracked"), OP_EQ, burst + 3);
+
+ done:
+  UNMOCK(get_param_cc_enabled);
+  UNMOCK(get_param_conn_enabled);
+  UNMOCK(channel_get_addr_if_possible);
+  tor_free(chan);
+  dos_free_all();
 }
 
 /** Test that the circuit tracker of the DoS subsystem will block clients who
@@ -1197,6 +1274,7 @@ test_dos_hsdir_fetch_shedding_edges(void *arg)
 struct testcase_t dos_tests[] = {
   { "conn_creation", test_dos_conn_creation, TT_FORK, NULL, NULL },
   { "circuit_creation", test_dos_circuit_creation, TT_FORK, NULL, NULL },
+  { "cc_over_rate", test_dos_cc_over_rate, TT_FORK, NULL, NULL },
   { "bucket_refill", test_dos_bucket_refill, TT_FORK, NULL, NULL },
   { "known_relay" , test_known_relay, TT_FORK,
     NULL, NULL },
