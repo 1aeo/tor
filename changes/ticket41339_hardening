@@ -7,6 +7,11 @@
     - Directory servers now discard anything a client sends on a tunneled
       (BEGIN_DIR) stream after its request, instead of buffering up to 10 MB of
       it per stream while they send their answer. Part of ticket 41339.
+    - When parsing an HTTP request or response without accepting a partial
+      body, reject a declared Content-Length that is too large to accept as
+      soon as the headers arrive, instead of waiting for those bytes. This
+      applies to directory requests and responses, the MetricsPort, the HTTP
+      CONNECT tunnel and HTTPS proxy replies. Part of ticket 41339.
 
   o Minor features (onion service directory):
     - Reject an onion service descriptor whose signature has the wrong length

@@ -2776,9 +2776,13 @@ test_dir_handle_get_hs_post_size_limit(void *data)
   (void) data;
 
   MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
-  /* A body just under the limit is read; one that reaches it is refused. */
+  /* A body just under the limit is read; one that reaches it is refused.
+   * A declared Content-Length that reaches the limit is refused before any
+   * body byte arrives; one just under it is kept until the body does. */
   tt_int_op(handle_hs_post(max_len - 1, max_len - 1), OP_EQ, 0);
   tt_int_op(handle_hs_post(max_len, max_len), OP_EQ, -1);
+  tt_int_op(handle_hs_post(max_len, 0), OP_EQ, -1);
+  tt_int_op(handle_hs_post(max_len - 1, 0), OP_EQ, 0);
 #ifdef HAVE_MODULE_DIRAUTH
   /* Authorities keep the 16 MB limit. */
   get_options_mutable()->AuthoritativeDir = 1;
