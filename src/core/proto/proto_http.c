@@ -99,6 +99,13 @@ fetch_from_buf_http(buf_t *buf,
     log_debug(LD_HTTP,"Got a contentlen of %d.",(int)contentlen);
     if (bodylen < contentlen) {
       if (!force_complete) {
+        /* Fail now on a declared body that the check above would reject
+         * once it arrived. */
+        if (max_bodylen <= contentlen) {
+          log_info(LD_HTTP, "Declared Content-Length %d larger than %d. "
+                   "Failing.", (int)contentlen, (int)max_bodylen - 1);
+          return -1;
+        }
         log_debug(LD_HTTP,"body not all here yet.");
         return 0; /* not all there yet */
       }

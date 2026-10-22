@@ -175,6 +175,11 @@ test_proto_http_invalid(void *arg)
         "Content-Length: Cheese\r\n\r\n"
         "foo"),
       "Content-Length is bogus; maybe someone is trying to crash us." },
+    /* Declared Content-Length already over the limit; body not here yet. */
+    { S("GET /index.html HTTP/1.0\r\n"
+        "Content-Length: 99999\r\n\r\n"
+        "short"),
+      "Declared Content-Length 99999 larger than 127" },
     };
   unsigned i;
   buf_t *buf = buf_new();
@@ -199,6 +204,20 @@ test_proto_http_invalid(void *arg)
     tor_free(h);
     tor_free(b);
     mock_clean_saved_logs();
+  }
+
+  /* A declared length under the limit, with the body not yet here, waits.
+   * force_complete still accepts the bytes it has when the declaration is
+   * over the limit. */
+  {
+    size_t bl = 0;
+    buf_add_string(buf, "GET / HTTP/1.0\r\nContent-Length: 10\r\n\r\nshort");
+    tt_int_op(0, OP_EQ, fetch_from_buf_http(buf, &h, 128, &b, &bl, 128, 0));
+    buf_clear(buf);
+    buf_add_string(buf,
+                   "GET / HTTP/1.0\r\nContent-Length: 99999\r\n\r\nshort");
+    tt_int_op(1, OP_EQ, fetch_from_buf_http(buf, &h, 128, &b, &bl, 128, 1));
+    tt_u64_op(bl, OP_EQ, 5);
   }
  done:
   tor_free(h);
