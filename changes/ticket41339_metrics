@@ -35,3 +35,6 @@
       {type="circuit_untracked"}, both while DoSCircuitCreationEnabled is on.
       Together with the client CREATE cells, they bound the number of client
       addresses from below. Part of ticket 41339.
+    - Count the bytes of each tunneled directory response that its stream reads
+      while the directory connection is open, by what the request asked for, as
+      tor_relay_begindir_response_bytes_total. Part of ticket 41339.

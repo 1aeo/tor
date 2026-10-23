@@ -105,6 +105,7 @@
 #include "feature/nodelist/routerlist.h"
 #include "feature/relay/dns.h"
 #include "feature/relay/ext_orport.h"
+#include "feature/relay/relay_metrics.h"
 #include "feature/relay/routermode.h"
 #include "feature/rend/rendcommon.h"
 #include "feature/stats/connstats.h"
@@ -3662,8 +3663,10 @@ record_num_bytes_transferred_impl(connection_t *conn,
   if (conn->type == CONN_TYPE_DIR && conn->purpose == DIR_PURPOSE_SERVER) {
     if (num_read > 0)
       bwhist_note_dir_bytes_read(num_read, now);
-    if (num_written > 0)
+    if (num_written > 0) {
       bwhist_note_dir_bytes_written(num_written, now);
+      relay_note_dir_response_bytes(TO_DIR_CONN(conn), num_written);
+    }
   }
 
   /* Linked connections and internal IPs aren't counted for statistics or

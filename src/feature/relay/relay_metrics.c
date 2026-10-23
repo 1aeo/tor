@@ -78,6 +78,7 @@ static void fill_begindir_response_values(void);
 static void fill_begindir_conns_values(void);
 static void fill_create_cell_values(void);
 static void fill_begindir_cell_values(void);
+static void fill_begindir_response_bytes_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -301,6 +302,14 @@ static const relay_metrics_entry_t base_metrics[] =
     .name = METRICS_NAME(relay_begindir_cell_total),
     .help = "Total number of BEGIN_DIR cells we received",
     .fill_fn = fill_begindir_cell_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_BEGINDIR_RESPONSE_BYTES,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_begindir_response_bytes_total),
+    .help = "Total number of tunneled directory response bytes read by "
+            "their stream",
+    .fill_fn = fill_begindir_response_bytes_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1401,6 +1410,31 @@ relay_note_dir_request(dir_connection_t *conn, dir_request_type_t type)
     return;
   conn->request_type = type + 1;
   dir_requests[type][conn->prev_hop]++;
+}
+
+/** Directory response bytes their stream read, by one more than the type of
+ * their request, or in slot 0, which isn't exported, while it has none (as
+ * on DirPort connections). Bytes still queued when the directory connection
+ * closes, which conn_close_if_marked() moves to the stream unread, aren't
+ * counted. */
+static uint64_t dir_response_bytes[DIR_REQUEST_TYPE_COUNT + 1];
+
+/** Count <b>n</b> bytes of the response on the directory server connection
+ * <b>conn</b> that its stream has just taken, by the type of its request. */
+void
+relay_note_dir_response_bytes(const dir_connection_t *conn, size_t n)
+{
+  dir_response_bytes[conn->request_type] += n;
+}
+
+/** Fill function for the RELAY_METRICS_NUM_BEGINDIR_RESPONSE_BYTES metric. */
+static void
+fill_begindir_response_bytes_values(void)
+{
+  fill_labeled_values(
+               &base_metrics[RELAY_METRICS_NUM_BEGINDIR_RESPONSE_BYTES],
+               NULL, NULL, "type", dir_request_names, dir_response_bytes + 1,
+               DIR_REQUEST_TYPE_COUNT);
 }
 
 /** Fill function for the RELAY_METRICS_NUM_BEGINDIR_REQUESTS metric. */

@@ -77,6 +77,8 @@ typedef enum {
   RELAY_METRICS_NUM_CREATE_CELLS,
   /** BEGIN_DIR cells, by previous hop and place on their circuit. */
   RELAY_METRICS_NUM_BEGINDIR_CELLS,
+  /** Tunneled directory response bytes their stream read, by type. */
+  RELAY_METRICS_NUM_BEGINDIR_RESPONSE_BYTES,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */
@@ -225,5 +227,7 @@ struct dir_connection_t;
 void relay_note_dir_request(struct dir_connection_t *conn,
                             dir_request_type_t type);
 void relay_note_dir_response(const struct dir_connection_t *conn);
+void relay_note_dir_response_bytes(const struct dir_connection_t *conn,
+                                   size_t n);
 
 #endif /* !defined(TOR_FEATURE_RELAY_RELAY_METRICS_H) */
