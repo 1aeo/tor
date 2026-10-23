@@ -7,6 +7,7 @@
  **/
 
 #define RELAY_METRICS_ENTRY_PRIVATE
+#define RELAY_METRICS_PRIVATE
 
 #include "orconfig.h"
 
@@ -26,10 +27,12 @@
 
 #include "lib/cc/ctassert.h"
 #include "lib/container/smartlist.h"
+#include "lib/crypt_ops/crypto_ed25519.h"
 #include "lib/log/util_bug.h"
 #include "lib/malloc/malloc.h"
 #include "lib/math/fp.h"
 #include "lib/metrics/metrics_store.h"
+#include "ext/siphash.h"
 
 #include "feature/dircommon/dir_connection_st.h"
 #include "feature/dircommon/directory.h"
@@ -81,6 +84,7 @@ static void fill_begindir_cell_values(void);
 static void fill_begindir_response_bytes_values(void);
 static void fill_create_cell_source_values(void);
 static void fill_begindir_cell_source_values(void);
+static void fill_hsdir_fetch_descriptor_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -328,6 +332,15 @@ static const relay_metrics_entry_t base_metrics[] =
     .help = "Total number of BEGIN_DIR cells, by their place among their "
             "source's in the same minute",
     .fill_fn = fill_begindir_cell_source_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_HSDIR_FETCH_DESCRIPTORS,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_hsdir_fetch_descriptor_total),
+    .help = "Total number of onion service descriptor fetches, by their "
+            "place among the fetches of the same descriptor in the same "
+            "minute",
+    .fill_fn = fill_hsdir_fetch_descriptor_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1509,6 +1522,76 @@ static void
 fill_begindir_cell_source_values(void)
 {
   fill_source_cell_values(RELAY_METRICS_NUM_BEGINDIR_CELL_SOURCES, true);
+}
+
+/** How many times a descriptor was fetched in the current minute, under a
+ * keyed hash of its blinded key. */
+typedef struct fetch_target_t {
+  /** The keyed hash of the descriptor's blinded key. */
+  uint64_t key_hash;
+  /** Its fetches in the current minute, stopping at NTH_BAND_MAX; 0 for a
+   * free slot. */
+  uint32_t n;
+} fetch_target_t;
+/** The descriptors fetched in the current minute, each in one of the
+ * FETCH_TARGET_PROBES slots from its own. */
+static fetch_target_t fetch_targets[FETCH_TARGET_SLOTS];
+/** The minute, approx_time() / 60, that fetch_targets holds. */
+static uint32_t fetch_targets_minute;
+/** Onion service descriptor fetches, by whether we found the descriptor and
+ * by their place among the fetches of the same one in the same minute. */
+static uint64_t hsdir_fetch_targets[2][NTH_BAND_COUNT];
+
+/** Note a fetch of the onion service descriptor with blinded key <b>key</b>,
+ * or NULL if the key in the URL didn't decode; <b>found</b> is whether we
+ * had it. Count it by its place among the fetches of the same key in the
+ * same minute; a key that didn't decode counts as a first fetch. We keep
+ * only a keyed hash of each key, until the first fetch of a later minute.
+ * Bridges don't count these, nor does a relay without a MetricsPort. */
+void
+relay_note_hsdir_fetch_target(const ed25519_public_key_t *key, bool found)
+{
+  const or_options_t *options = get_options();
+  const uint32_t minute = (uint32_t) (approx_time() / 60);
+  uint64_t key_hash;
+  uint32_t n = 1;
+
+  if (options->BridgeRelay || !options->MetricsPort_set)
+    return;
+  if (fetch_targets_minute != minute) {
+    memset(fetch_targets, 0, sizeof(fetch_targets));
+    fetch_targets_minute = minute;
+  }
+  key_hash = key ? siphash24g(key->pubkey, sizeof(key->pubkey)) : 0;
+  for (int i = 0; key && i < FETCH_TARGET_PROBES; i++) {
+    fetch_target_t *t = &fetch_targets[(key_hash + i) % FETCH_TARGET_SLOTS];
+    if (t->n == 0) {
+      t->key_hash = key_hash;
+      t->n = 1;
+      break;
+    }
+    if (t->key_hash == key_hash) {
+      if (t->n < NTH_BAND_MAX)
+        t->n++;
+      n = t->n;
+      break;
+    }
+  }
+  hsdir_fetch_targets[found][nth_band_of(n)]++;
+}
+
+/** Fill function for the RELAY_METRICS_NUM_HSDIR_FETCH_DESCRIPTORS metric. */
+static void
+fill_hsdir_fetch_descriptor_values(void)
+{
+  const relay_metrics_entry_t *rentry =
+    &base_metrics[RELAY_METRICS_NUM_HSDIR_FETCH_DESCRIPTORS];
+  static const char *const lookup_names[] = { "not_found", "found" };
+
+  for (int f = 0; f < 2; f++)
+    fill_labeled_values(rentry, "lookup", lookup_names[f], "nth",
+                        nth_band_names, hsdir_fetch_targets[f],
+                        NTH_BAND_COUNT);
 }
 
 /** Tunneled directory responses fully handed to their stream (which doesn't

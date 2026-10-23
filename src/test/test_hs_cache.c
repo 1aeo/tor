@@ -13,6 +13,7 @@
 #define CHANNEL_OBJECT_PRIVATE
 #define CIRCUITLIST_PRIVATE
 #define DOS_PRIVATE
+#define RELAY_METRICS_PRIVATE
 
 #include "app/config/config.h"
 #include "app/config/or_options_st.h"
@@ -37,6 +38,7 @@
 #include "lib/crypt_ops/crypto_format.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/metrics/metrics_store.h"
+#include "ext/siphash.h"
 
 #include "core/or/edge_connection_st.h"
 #include "core/or/dos_options_st.h"
@@ -592,6 +594,10 @@ get_metric(const char *name, const char *key, const char *value)
   get_metric(METRICS_NAME(relay_hsdir_upload_total), "action", (action))
 #define DOS_METRIC(type) \
   get_metric(METRICS_NAME(relay_dos_total), "type", (type))
+/* tor_relay_hsdir_fetch_descriptor_total{lookup, nth} */
+#define FETCH_TARGET_METRIC(lookup, nth) \
+  get_metric2(METRICS_NAME(relay_hsdir_fetch_descriptor_total), "lookup", \
+              (lookup), "nth", (nth))
 /* tor_relay_begindir_request_total{type, prev_hop}, and its sum over the
  * three kinds of previous hop. */
 #define REQ_METRIC(type, hop) \
@@ -669,7 +675,7 @@ test_hsdir_get_post_metrics(void *arg)
   hs_descriptor_t *desc = NULL;
   dir_connection_t *dirport;
   or_circuit_t *circs[2];
-  char *desc_str = NULL, *get = NULL;
+  char *desc_str = NULL, *get = NULL, *get_padded = NULL;
   const char *post = "POST /tor/hs/3/publish HTTP/1.0\r\n\r\n";
   const char *get_actions[] = { "success", "not_found", "single_hop",
                                 "refused" };
@@ -680,11 +686,14 @@ test_hsdir_get_post_metrics(void *arg)
   init_test();
   MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
   get_options_mutable()->ORPort_set = 1; /* Accept descriptor uploads. */
+  get_options_mutable()->MetricsPort_set = 1;
   tt_int_op(ed25519_keypair_generate(&signing_kp, 0), OP_EQ, 0);
   desc = hs_helper_build_hs_desc_with_ip(&signing_kp);
   tt_int_op(hs_desc_encode_descriptor(desc, &signing_kp, NULL, &desc_str),
             OP_EQ, 0);
   tor_asprintf(&get, GET("/tor/hs/3/%s"), helper_get_hsdir_query(desc));
+  /* The same key: base64 decoding stops at the first '='. */
+  tor_asprintf(&get_padded, GET("/tor/hs/3/%s=x"), query_b64);
 
   hsdir_request_on_new_circ(chan, get, NULL); /* Not uploaded yet. */
   /* The second request on a circuit is refused, and closes the circuit. */
@@ -698,7 +707,8 @@ test_hsdir_get_post_metrics(void *arg)
   hsdir_request_on_new_circ(chan,
                             "POST /tor/hs/2/publish HTTP/1.0\r\n\r\n",
                             desc_str);
-  tt_int_op(hsdir_request_on_circuit(circs[1], get, NULL), OP_EQ, 200);
+  tt_int_op(hsdir_request_on_circuit(circs[1], get_padded, NULL),
+            OP_EQ, 200);
   tt_int_op(hsdir_request_on_circuit(circs[1], post, desc_str), OP_EQ, 0);
   chan->is_client = 1; /* A one-hop client is refused. */
   hsdir_request_on_new_circ(chan, get, NULL);
@@ -721,6 +731,11 @@ test_hsdir_get_post_metrics(void *arg)
   tt_i64_op(REQ_SUM("hs_post"), OP_EQ, 6);
   tt_i64_op(REQ_METRIC("hs_get", "client"), OP_EQ, 1);
   tt_i64_op(REQ_METRIC("hs_post", "client"), OP_EQ, 1);
+  /* Only the two fetches that reached the cache count, by descriptor
+   * however its key was spelled: it was missing the first time, and found on
+   * its second fetch. */
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1"), OP_EQ, 1);
+  tt_i64_op(FETCH_TARGET_METRIC("found", "2_10"), OP_EQ, 1);
 
  done:
   UNMOCK(connection_write_to_buf_impl_);
@@ -729,6 +744,7 @@ test_hsdir_get_post_metrics(void *arg)
   hs_descriptor_free(desc);
   tor_free(desc_str);
   tor_free(get);
+  tor_free(get_padded);
 }
 
 /* Publish a descriptor to the HSDir, then fetch it. Check that the received
@@ -1521,6 +1537,77 @@ test_source_cell_metrics(void *arg)
   free_fake_channel(client2);
 }
 
+/* The blinded key numbered <b>i</b>, for tests. */
+static const ed25519_public_key_t *
+fetch_target_key(uint32_t i)
+{
+  static ed25519_public_key_t key;
+
+  set_uint32(key.pubkey, i);
+  return &key;
+}
+
+/* Descriptor fetches are counted by their place among the fetches of the
+ * same descriptor in the same minute, found and missing apart. A minute with
+ * more descriptors than the table holds counts the rest as first fetches, as
+ * it does keys that don't decode. */
+static void
+test_hsdir_fetch_target_metrics(void *arg)
+{
+  const time_t t0 = 1800000000; /* The start of a minute. */
+  (void) arg;
+
+  update_approx_time(t0);
+  /* Without a MetricsPort, a relay doesn't remember fetches either: once one
+   * is added, a descriptor's next fetch is its first. */
+  relay_note_hsdir_fetch_target(fetch_target_key(1), true);
+  get_options_mutable()->MetricsPort_set = 1;
+  for (int i = 0; i < 12; i++)
+    relay_note_hsdir_fetch_target(fetch_target_key(1), true);
+  relay_note_hsdir_fetch_target(fetch_target_key(2), false);
+  relay_note_hsdir_fetch_target(fetch_target_key(2), false);
+  tt_i64_op(FETCH_TARGET_METRIC("found", "1"), OP_EQ, 1);
+  tt_i64_op(FETCH_TARGET_METRIC("found", "2_10"), OP_EQ, 9);
+  tt_i64_op(FETCH_TARGET_METRIC("found", "11_100"), OP_EQ, 2);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1"), OP_EQ, 1);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "2_10"), OP_EQ, 1);
+  /* Keys that don't decode are each a first fetch. */
+  relay_note_hsdir_fetch_target(NULL, false);
+  relay_note_hsdir_fetch_target(NULL, false);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1"), OP_EQ, 3);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "2_10"), OP_EQ, 1);
+
+  /* A new minute starts over. */
+  update_approx_time(t0 + 60);
+  relay_note_hsdir_fetch_target(fetch_target_key(1), true);
+  tt_i64_op(FETCH_TARGET_METRIC("found", "1"), OP_EQ, 2);
+
+  /* More keys than fit: each extra one is a first fetch. */
+  for (uint32_t i = 100; i < 5100; i++)
+    relay_note_hsdir_fetch_target(fetch_target_key(i), false);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1"), OP_EQ, 5003);
+  relay_note_hsdir_fetch_target(fetch_target_key(1), true);
+  tt_i64_op(FETCH_TARGET_METRIC("found", "2_10"), OP_EQ, 10);
+
+  /* The last two bands. */
+  update_approx_time(t0 + 120);
+  for (int i = 0; i < 1001; i++)
+    relay_note_hsdir_fetch_target(fetch_target_key(3), false);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "101_1000"), OP_EQ, 900);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1001_plus"), OP_EQ, 1);
+
+  /* Bridges don't count them, nor does a relay without a MetricsPort. */
+  get_options_mutable()->BridgeRelay = 1;
+  relay_note_hsdir_fetch_target(fetch_target_key(3), false);
+  get_options_mutable()->BridgeRelay = 0;
+  get_options_mutable()->MetricsPort_set = 0;
+  relay_note_hsdir_fetch_target(fetch_target_key(3), false);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1001_plus"), OP_EQ, 1);
+
+ done:
+  ;
+}
+
 /* Each new family is exported with its type and number of series (one per
  * previous-hop class, and per nth or type), and with the counted values. */
 static void
@@ -1541,6 +1628,7 @@ test_prev_hop_metric_series(void *arg)
     { METRICS_NAME(relay_begindir_response_bytes_total), 10, "counter" },
     { METRICS_NAME(relay_create_cell_source_total), 15, "counter" },
     { METRICS_NAME(relay_begindir_cell_source_total), 15, "counter" },
+    { METRICS_NAME(relay_hsdir_fetch_descriptor_total), 10, "counter" },
   };
   or_circuit_t *circ = or_circuit_new(0, NULL);
   (void) arg;
@@ -2011,6 +2099,80 @@ test_dir_response_bytes_on_read(void *arg)
   connection_free_minimal(TO_CONN(edge));
 }
 
+/* The slot where relay_note_hsdir_fetch_target() starts to look for the
+ * descriptor with blinded key <b>key</b>. */
+static unsigned
+fetch_target_slot(const ed25519_public_key_t *key)
+{
+  return (unsigned) (siphash24g(key->pubkey, sizeof(key->pubkey)) %
+                     FETCH_TARGET_SLOTS);
+}
+
+/* A fetch looks for its descriptor in the FETCH_TARGET_PROBES (16) slots
+ * from its own: of 17 descriptors that start at the same slot, 16 are found
+ * again and the 17th counts as a first fetch each time, until the minute
+ * ends. The keys all start at the table's last slot, so that their probes
+ * wrap to its start, and are chosen by slot, so this holds whatever the
+ * siphash key. */
+static void
+test_hsdir_fetch_target_probing(void *arg)
+{
+  const time_t t0 = 1800000000; /* The start of a minute. */
+  const int n_keys = FETCH_TARGET_PROBES + 1;
+  uint32_t keys[FETCH_TARGET_PROBES + 1];
+  int n = 0;
+  (void) arg;
+
+  for (uint32_t i = 1; n < n_keys && i < 10000000; i++) {
+    if (fetch_target_slot(fetch_target_key(i)) == FETCH_TARGET_SLOTS - 1)
+      keys[n++] = i;
+  }
+  tt_int_op(n, OP_EQ, n_keys);
+  get_options_mutable()->MetricsPort_set = 1;
+  update_approx_time(t0);
+
+  /* Each key twice: the last one finds no slot, so both its fetches are
+   * first fetches. */
+  for (int j = 0; j < 2; j++)
+    for (int i = 0; i < n_keys; i++)
+      relay_note_hsdir_fetch_target(fetch_target_key(keys[i]), false);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1"), OP_EQ, n_keys + 1);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "2_10"), OP_EQ, n_keys - 1);
+  /* The last second of the same minute. */
+  update_approx_time(t0 + 59);
+  relay_note_hsdir_fetch_target(fetch_target_key(keys[1]), false);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "2_10"), OP_EQ, n_keys);
+
+ done:
+  ;
+}
+
+/* Fetches of two different keys are two first fetches, even when the keys
+ * don't decode and share their first 40 characters, which base64_decode()
+ * decodes before it fails. */
+static void
+test_hsdir_fetch_target_long_keys(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  (void) arg;
+
+  init_test();
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  get_options_mutable()->MetricsPort_set = 1;
+  update_approx_time(1800000000); /* The start of a minute. */
+#define A59 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  hsdir_request_on_new_circ(chan, GET("/tor/hs/3/" A59 "a"), NULL);
+  hsdir_request_on_new_circ(chan, GET("/tor/hs/3/" A59 "b"), NULL);
+#undef A59
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "1"), OP_EQ, 2);
+  tt_i64_op(FETCH_TARGET_METRIC("not_found", "2_10"), OP_EQ, 0);
+
+ done:
+  UNMOCK(connection_write_to_buf_impl_);
+  circuit_free_all();
+  free_fake_channel(chan);
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -2040,6 +2202,8 @@ struct testcase_t hs_cache[] = {
   { "dir_response_bytes_metric", test_dir_response_bytes_metric, TT_FORK,
     NULL, NULL },
   { "source_cell_metrics", test_source_cell_metrics, TT_FORK, NULL, NULL },
+  { "hsdir_fetch_target_metrics", test_hsdir_fetch_target_metrics, TT_FORK,
+    NULL, NULL },
   { "dir_server_conns_gauge", test_dir_server_conns_gauge, TT_FORK,
     NULL, NULL },
   { "hsdir_prev_hop_counter", test_hsdir_prev_hop_counter, TT_FORK,
@@ -2062,6 +2226,10 @@ struct testcase_t hs_cache[] = {
   { "metric_single_labels", test_metric_single_labels, TT_FORK, NULL, NULL },
   { "dir_response_bytes_on_read", test_dir_response_bytes_on_read, TT_FORK,
     NULL, NULL },
+  { "hsdir_fetch_target_probing", test_hsdir_fetch_target_probing, TT_FORK,
+    NULL, NULL },
+  { "hsdir_fetch_target_long_keys", test_hsdir_fetch_target_long_keys,
+    TT_FORK, NULL, NULL },
 
   END_OF_TESTCASES
 };
