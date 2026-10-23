@@ -61,6 +61,9 @@ typedef struct dos_client_stats_t {
 
   /** Number of times the circ_max_cell_queue_size limit has been reached. */
   uint32_t num_circ_max_cell_queue_size;
+
+  /** Cells this address sent over client channels in its latest minute. */
+  source_minute_t source_minute;
 } dos_client_stats_t;
 
 /* General API. */

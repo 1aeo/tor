@@ -79,6 +79,8 @@ static void fill_begindir_conns_values(void);
 static void fill_create_cell_values(void);
 static void fill_begindir_cell_values(void);
 static void fill_begindir_response_bytes_values(void);
+static void fill_create_cell_source_values(void);
+static void fill_begindir_cell_source_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -310,6 +312,22 @@ static const relay_metrics_entry_t base_metrics[] =
     .help = "Total number of tunneled directory response bytes read by "
             "their stream",
     .fill_fn = fill_begindir_response_bytes_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_CREATE_CELL_SOURCES,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_create_cell_source_total),
+    .help = "Total number of CREATE cells, by their place among their "
+            "source's in the same minute",
+    .fill_fn = fill_create_cell_source_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_BEGINDIR_CELL_SOURCES,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_begindir_cell_source_total),
+    .help = "Total number of BEGIN_DIR cells, by their place among their "
+            "source's in the same minute",
+    .fill_fn = fill_begindir_cell_source_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1465,6 +1483,32 @@ fill_begindir_cell_values(void)
     fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_BEGINDIR_CELLS],
                         "prev_hop", prev_hop_names[p], "nth", nth_band_names,
                         rep_hist_get_begindir_cells(p), NTH_BAND_COUNT);
+}
+
+/** Fill the per-source family of CREATE cells, or of BEGIN_DIR cells if
+ * <b>begindir</b>. */
+static void
+fill_source_cell_values(relay_metrics_key_t key, bool begindir)
+{
+  for (int p = 0; p < CHANNEL_PREV_HOP_COUNT; p++)
+    fill_labeled_values(&base_metrics[key], "prev_hop", prev_hop_names[p],
+                        "nth", nth_band_names,
+                        rep_hist_get_source_cells(begindir, p),
+                        NTH_BAND_COUNT);
+}
+
+/** Fill function for the RELAY_METRICS_NUM_CREATE_CELL_SOURCES metric. */
+static void
+fill_create_cell_source_values(void)
+{
+  fill_source_cell_values(RELAY_METRICS_NUM_CREATE_CELL_SOURCES, false);
+}
+
+/** Fill function for the RELAY_METRICS_NUM_BEGINDIR_CELL_SOURCES metric. */
+static void
+fill_begindir_cell_source_values(void)
+{
+  fill_source_cell_values(RELAY_METRICS_NUM_BEGINDIR_CELL_SOURCES, true);
 }
 
 /** Tunneled directory responses fully handed to their stream (which doesn't

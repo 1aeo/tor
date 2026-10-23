@@ -84,10 +84,13 @@ nth_band_of(uint32_t n)
   return NTH_BAND_1001_PLUS;
 }
 
-void rep_hist_note_create_cell(channel_prev_hop_t prev_hop);
+void rep_hist_note_create_cell(channel_t *chan, channel_prev_hop_t prev_hop);
 void rep_hist_note_begindir_cell(or_circuit_t *circ);
 const uint64_t *rep_hist_get_create_cells(void);
 const uint64_t *rep_hist_get_begindir_cells(channel_prev_hop_t prev_hop);
+
+const uint64_t *rep_hist_get_source_cells(bool begindir,
+                                          channel_prev_hop_t prev_hop);
 
 void rep_hist_buffer_stats_init(time_t now);
 void rep_hist_buffer_stats_add_circ(circuit_t *circ,

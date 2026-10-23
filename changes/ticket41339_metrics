@@ -38,3 +38,11 @@
     - Count the bytes of each tunneled directory response that its stream reads
       while the directory connection is open, by what the request asked for, as
       tor_relay_begindir_response_bytes_total. Part of ticket 41339.
+    - Count CREATE and BEGIN_DIR cells by previous hop and by their place among
+      the cells of the same kind that their source sent in the same minute
+      (nth), as tor_relay_create_cell_source_total and
+      tor_relay_begindir_cell_source_total. A source is a relay's channel, a
+      client address that tor tracks, or else a client channel. The first band
+      counts sources per minute, and the later bands show how much a limit per
+      source would cut. Bridges don't count these, and other relays count them
+      only while a MetricsPort is configured. Part of ticket 41339.
