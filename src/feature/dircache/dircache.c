@@ -1470,6 +1470,7 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
   const char *pubkey_str = NULL;
   const char *url = args->url;
   ed25519_public_key_t blinded_key;
+  bool key_ok;
 
   if (dir_conn_is_closing(conn)) {
     goto done;
@@ -1497,15 +1498,18 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
   pubkey_str = url + strlen("/tor/hs/3/");
   retval = hs_cache_lookup_as_dir(HS_VERSION_THREE,
                                   pubkey_str, &desc_str);
+  /* Decode blinded key. This is certain to work if
+   * hs_cache_lookup_as_dir() found a descriptor. Count the fetch by the key,
+   * whichever way the URL spelled it. */
+  key_ok = ed25519_public_from_base64(&blinded_key, pubkey_str) == 0;
+  relay_note_hsdir_fetch_target(key_ok ? &blinded_key : NULL,
+                                retval > 0 && desc_str);
   if (retval <= 0 || desc_str == NULL) {
     relay_increment_hsdir_get_action(HSDIR_GET_NOT_FOUND);
     write_short_http_response(conn, 404, "Not found");
     goto done;
   }
 
-  /* Decode blinded key. This is certain to work else
-   * hs_cache_lookup_as_dir() would have failed. */
-  ed25519_public_from_base64(&blinded_key, pubkey_str);
   if (!dos_hsdir_desc_fetch_allowed(
                         hs_cache_get_dir_fetch_limiter(&blinded_key),
                         strlen(desc_str))) {

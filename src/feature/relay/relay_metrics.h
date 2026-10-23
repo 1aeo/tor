@@ -85,6 +85,9 @@ typedef enum {
   /** BEGIN_DIR cells, by previous hop and place among their source's in the
    * same minute. */
   RELAY_METRICS_NUM_BEGINDIR_CELL_SOURCES,
+  /** Onion service descriptor fetches, by whether we found the descriptor
+   * and place among the fetches of the same one in the same minute. */
+  RELAY_METRICS_NUM_HSDIR_FETCH_DESCRIPTORS,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */
@@ -230,10 +233,21 @@ typedef enum {
 } dir_request_type_t;
 
 struct dir_connection_t;
+struct ed25519_public_key_t;
 void relay_note_dir_request(struct dir_connection_t *conn,
                             dir_request_type_t type);
 void relay_note_dir_response(const struct dir_connection_t *conn);
 void relay_note_dir_response_bytes(const struct dir_connection_t *conn,
                                    size_t n);
+void relay_note_hsdir_fetch_target(const struct ed25519_public_key_t *key,
+                                   bool found);
+
+#ifdef RELAY_METRICS_PRIVATE
+/** Slots for the descriptors fetched in the current minute, and how far from
+ * its own slot a key may land. A key that doesn't fit counts as a first
+ * fetch: a few do once a minute has more than about 2000 distinct keys. */
+#define FETCH_TARGET_SLOTS 4096
+#define FETCH_TARGET_PROBES 16
+#endif /* defined(RELAY_METRICS_PRIVATE) */
 
 #endif /* !defined(TOR_FEATURE_RELAY_RELAY_METRICS_H) */

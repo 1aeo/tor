@@ -46,3 +46,11 @@
       counts sources per minute, and the later bands show how much a limit per
       source would cut. Bridges don't count these, and other relays count them
       only while a MetricsPort is configured. Part of ticket 41339.
+    - Count onion service descriptor fetches that reach the HSDir cache by
+      whether the descriptor was found (lookup) and by their place among the
+      fetches of the same descriptor in the same minute (nth), as
+      tor_relay_hsdir_fetch_descriptor_total. This tells an operator whether a
+      flood fetches a few descriptors again and again or sweeps many. Only a
+      keyed hash of each key is kept, until a fetch is counted in a later
+      minute. Bridges don't count these, and other relays count them only while
+      a MetricsPort is configured. Part of ticket 41339.
