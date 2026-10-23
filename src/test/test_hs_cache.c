@@ -1401,6 +1401,29 @@ test_dir_request_url_table_types(void *arg)
   free_fake_channel(chan);
 }
 
+#define RESPONSE_BYTES_METRIC(type) \
+  get_metric(METRICS_NAME(relay_begindir_response_bytes_total), "type", \
+             (type))
+
+/* Response bytes are counted by the type of their request, once it has
+ * one. */
+static void
+test_dir_response_bytes_metric(void *arg)
+{
+  dir_connection_t *conn = new_waiting_dir_conn(NULL);
+  (void) arg;
+
+  relay_note_dir_response_bytes(conn, 100); /* Not typed yet. */
+  relay_note_dir_request(conn, DIR_REQUEST_CONSENSUS);
+  relay_note_dir_response_bytes(conn, 1000);
+  relay_note_dir_response_bytes(conn, 24);
+  tt_i64_op(RESPONSE_BYTES_METRIC("hs_get"), OP_EQ, 0);
+  tt_i64_op(RESPONSE_BYTES_METRIC("consensus"), OP_EQ, 1024);
+
+ done:
+  connection_free_minimal(TO_CONN(conn));
+}
+
 /* Each new family is exported with its type and number of series (one per
  * previous-hop class, and per nth or type), and with the counted values. */
 static void
@@ -1418,6 +1441,7 @@ test_prev_hop_metric_series(void *arg)
     { METRICS_NAME(relay_create_cell_total), 3, "counter" },
     { METRICS_NAME(relay_begindir_cell_total), 15, "counter" },
     { METRICS_NAME(relay_begindir_request_total), 30, "counter" },
+    { METRICS_NAME(relay_begindir_response_bytes_total), 10, "counter" },
   };
   or_circuit_t *circ = or_circuit_new(0, NULL);
   (void) arg;
@@ -1837,9 +1861,55 @@ test_metric_single_labels(void *arg)
   tt_assert(EXPORTS_SERIES(relay_begindir_response_total, "type=\"other\""));
   tt_assert(EXPORTS_SERIES(relay_begindir_connections,
                            "state=\"command_wait\""));
+  tt_assert(EXPORTS_SERIES(relay_begindir_response_bytes_total,
+                           "type=\"hs_get\""));
 
  done:
   ;
+}
+
+/* A tunneled response's bytes are counted where tor counts directory bytes:
+ * when the exit edge reads them from its directory connection's outbuf, by
+ * the type of the request, however few they are. */
+static void
+test_dir_response_bytes_on_read(void *arg)
+{
+  dir_connection_t *dirconn = new_waiting_dir_conn(NULL);
+  edge_connection_t *edge = edge_connection_new(CONN_TYPE_EXIT, AF_INET);
+  char body[1000];
+  (void) arg;
+
+  MOCK(connection_mark_for_close_internal_, hsdir_mock_mark_for_close);
+  tor_init_connection_lists();
+  connection_bucket_init();
+  relay_note_dir_request(dirconn, DIR_REQUEST_MICRODESC);
+  TO_CONN(dirconn)->state = DIR_CONN_STATE_SERVER_WRITING;
+  /* As connection_exit_connect_dir() links them, but the edge keeps what it
+   * reads on its inbuf instead of packaging it for a circuit. */
+  TO_CONN(edge)->state = EXIT_CONN_STATE_CONNECTING;
+  connection_link_connections(TO_CONN(dirconn), TO_CONN(edge));
+  tt_int_op(connection_add(TO_CONN(dirconn)), OP_EQ, 0);
+  tt_int_op(connection_add(TO_CONN(edge)), OP_EQ, 0);
+
+  buf_add(TO_CONN(dirconn)->outbuf, "H", 1);
+  tt_int_op(connection_handle_read(TO_CONN(edge)), OP_EQ, 0);
+  tt_i64_op(RESPONSE_BYTES_METRIC("microdesc"), OP_EQ, 1);
+  /* Reading the outbuf empty finished the response, and closed it. */
+  tt_assert(TO_CONN(dirconn)->marked_for_close);
+  TO_CONN(dirconn)->marked_for_close = 0;
+  memset(body, 'x', sizeof(body));
+  buf_add(TO_CONN(dirconn)->outbuf, body, sizeof(body));
+  tt_int_op(connection_handle_read(TO_CONN(edge)), OP_EQ, 0);
+  tt_int_op(connection_get_inbuf_len(TO_CONN(edge)), OP_EQ, 1 + sizeof(body));
+  tt_i64_op(RESPONSE_BYTES_METRIC("microdesc"), OP_EQ, 1 + sizeof(body));
+
+ done:
+  UNMOCK(connection_mark_for_close_internal_);
+  TO_CONN(dirconn)->linked_conn = TO_CONN(edge)->linked_conn = NULL;
+  connection_remove(TO_CONN(dirconn));
+  connection_remove(TO_CONN(edge));
+  connection_free_minimal(TO_CONN(dirconn));
+  connection_free_minimal(TO_CONN(edge));
 }
 
 struct testcase_t hs_cache[] = {
@@ -1868,6 +1938,8 @@ struct testcase_t hs_cache[] = {
     TT_FORK, NULL, NULL },
   { "dir_request_url_table_types", test_dir_request_url_table_types, TT_FORK,
     NULL, NULL },
+  { "dir_response_bytes_metric", test_dir_response_bytes_metric, TT_FORK,
+    NULL, NULL },
   { "dir_server_conns_gauge", test_dir_server_conns_gauge, TT_FORK,
     NULL, NULL },
   { "hsdir_prev_hop_counter", test_hsdir_prev_hop_counter, TT_FORK,
@@ -1888,6 +1960,8 @@ struct testcase_t hs_cache[] = {
     NULL, NULL },
   { "begindir_cell_bands", test_begindir_cell_bands, TT_FORK, NULL, NULL },
   { "metric_single_labels", test_metric_single_labels, TT_FORK, NULL, NULL },
+  { "dir_response_bytes_on_read", test_dir_response_bytes_on_read, TT_FORK,
+    NULL, NULL },
 
   END_OF_TESTCASES
 };

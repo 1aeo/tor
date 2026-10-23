@@ -53,6 +53,13 @@ relay_note_dir_request(struct dir_connection_t *conn, dir_request_type_t type)
 }
 
 void
+relay_note_dir_response_bytes(const struct dir_connection_t *conn, size_t n)
+{
+  (void)conn;
+  (void)n;
+}
+
+void
 relay_note_dir_response(const struct dir_connection_t *conn)
 {
   (void)conn;
