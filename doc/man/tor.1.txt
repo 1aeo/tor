@@ -3197,9 +3197,12 @@ MetricsPort.
     have a descriptor: the check RefuseUnknownExits applies to exit streams. A
     relay that is new in the client's consensus but not yet in ours is also
     refused, so clients then use another HSDir. Such requests are counted as
-    tor_relay_dos_total\{type="hsdir_unknown_prev_hop"}. "auto" means use
-    the consensus parameter. If not defined in the consensus, the value is
-    0. (Default: auto)
+    tor_relay_dos_total\{type="hsdir_unknown_prev_hop"}. A relay that has
+    left our consensus is still known while we have its descriptor, for up
+    to two days; requests from such relays are counted as
+    \{type="hsdir_descriptor_only_prev_hop"}. "auto" means use the consensus
+    parameter. If not defined in the consensus, the value is 0. (Default:
+    auto)
 
 [[HSDirDescriptorFetchRate]] **HSDirDescriptorFetchRate** __NUM__::
 

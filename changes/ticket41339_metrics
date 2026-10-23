@@ -54,3 +54,9 @@
       keyed hash of each key is kept, until a fetch is counted in a later
       minute. Bridges don't count these, and other relays count them only while
       a MetricsPort is configured. Part of ticket 41339.
+    - Count the onion service directory requests that tor accepts whose
+      previous hop is a relay we know only by its descriptor, not in our
+      consensus, as tor_relay_dos_total{type="hsdir_descriptor_only_prev_hop"}.
+      HSDirRefuseUnknownPrevHop treats these as known: the count shows how much
+      traffic comes from relays that recently left the consensus. Part of
+      ticket 41339.

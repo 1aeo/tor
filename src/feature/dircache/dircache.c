@@ -18,7 +18,6 @@
 #include "core/or/channel.h"
 #include "core/or/circuitlist.h"
 #include "core/or/connection_edge.h"
-#include "core/or/connection_or.h"
 #include "core/or/dos.h"
 #include "core/or/relay.h"
 #include "feature/dirauth/dirvote.h"
@@ -1446,8 +1445,14 @@ allow_hs_dir_request(dir_connection_t *conn)
   or_circuit_t *circ =
     TO_OR_CIRCUIT(TO_EDGE_CONN(TO_CONN(conn)->linked_conn)->on_circuit);
 
-  if (connection_or_digest_is_known_relay(circ->p_chan->identity_digest))
+  /* connection_or_digest_is_known_relay(), with its two cases apart, to
+   * count the requests from relays we know only by their descriptor. */
+  if (router_get_consensus_status_by_id(circ->p_chan->identity_digest))
     return true;
+  if (router_get_by_id_digest(circ->p_chan->identity_digest)) {
+    dos_note_dir_stat(DOS_DIR_HSDIR_DESCRIPTOR_ONLY_PREV_HOP);
+    return true;
+  }
   dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
   if (!dos_should_refuse_unknown_hsdir_prev_hop())
     return true;
