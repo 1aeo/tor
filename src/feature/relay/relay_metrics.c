@@ -525,6 +525,8 @@ fill_dos_values(void)
     { "begindir_hsdir_rejected", dos_get_num_begindir_hsdir_rejected() },
     { "hsdir_unknown_prev_hop",
       dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP) },
+    { "hsdir_descriptor_only_prev_hop",
+      dos_get_dir_stat(DOS_DIR_HSDIR_DESCRIPTOR_ONLY_PREV_HOP) },
     { "hsdir_fetch_over_rate",
       dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE) },
     { "hsdir_fetch_pressure",

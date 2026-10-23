@@ -24,6 +24,7 @@
 #include "feature/dircommon/directory.h"
 #include "feature/hs/hs_ident.h"
 #include "feature/nodelist/networkstatus.h"
+#include "feature/nodelist/routerlist.h"
 #include "core/mainloop/connection.h"
 #include "core/mainloop/mainloop.h"
 #include "core/proto/proto_http.h"
@@ -46,6 +47,8 @@
 #include "core/or/or_connection_st.h"
 #include "feature/dircommon/dir_connection_st.h"
 #include "feature/nodelist/networkstatus_st.h"
+#include "feature/nodelist/routerinfo_st.h"
+#include "feature/nodelist/routerlist_st.h"
 #include "feature/nodelist/routerstatus_st.h"
 
 #include "test/fakechans.h"
@@ -1723,6 +1726,7 @@ test_hsdir_prev_hop_counter(void *arg)
 {
   channel_t *chan = new_fake_channel();
   routerstatus_t known_rs;
+  routerinfo_t *ri = NULL;
   or_circuit_t *circ;
   const char *post = "POST /tor/hs/3/publish HTTP/1.0\r\n\r\n";
   (void) arg;
@@ -1750,6 +1754,20 @@ test_hsdir_prev_hop_counter(void *arg)
   tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP), OP_EQ, 2);
   chan->is_client = 0;
 
+  /* A previous hop whose descriptor we have, but which isn't in our
+   * consensus, is counted apart. */
+  ri = tor_malloc_zero(sizeof(routerinfo_t));
+  digestmap_set((digestmap_t *) router_get_routerlist()->identity_map,
+                chan->identity_digest, ri);
+  tt_int_op(hsdir_request_on_new_circ(chan, GET("/tor/hs/3/x"), NULL),
+            OP_EQ, 404);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_DESCRIPTOR_ONLY_PREV_HOP),
+            OP_EQ, 1);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP), OP_EQ, 2);
+  tt_i64_op(DOS_METRIC("hsdir_descriptor_only_prev_hop"), OP_EQ, 1);
+  digestmap_remove((digestmap_t *) router_get_routerlist()->identity_map,
+                   chan->identity_digest);
+
   /* A previous hop in our consensus is known. */
   memset(&known_rs, 0, sizeof(known_rs)); /* Matches the zeroed identity. */
   mock_hsdir_ns = tor_malloc_zero(sizeof(networkstatus_t));
@@ -1758,6 +1776,8 @@ test_hsdir_prev_hop_counter(void *arg)
   MOCK(networkstatus_get_latest_consensus, mock_hsdir_get_latest_consensus);
   hsdir_request_on_new_circ(chan, GET("/tor/hs/3/x"), NULL);
   tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP), OP_EQ, 2);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_DESCRIPTOR_ONLY_PREV_HOP),
+            OP_EQ, 1);
 
  done:
   UNMOCK(connection_write_to_buf_impl_);
@@ -1768,6 +1788,7 @@ test_hsdir_prev_hop_counter(void *arg)
   }
   circuit_free_all();
   free_fake_channel(chan);
+  tor_free(ri);
 }
 
 /* HSDirRefuseUnknownPrevHop only refuses when the torrc, or else the

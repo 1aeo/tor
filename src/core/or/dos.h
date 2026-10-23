@@ -92,6 +92,9 @@ typedef enum dos_dir_stat_t {
   /** Onion service directory requests over an anonymous circuit, and the
    * first on it, whose previous hop is not a known relay. */
   DOS_DIR_HSDIR_UNKNOWN_PREV_HOP,
+  /** Those whose previous hop is a relay we know only by its descriptor,
+   * not in our consensus, which aren't counted above. */
+  DOS_DIR_HSDIR_DESCRIPTOR_ONLY_PREV_HOP,
   /** Fetches of a cached onion service descriptor over
    * HSDirDescriptorFetchRate. */
   DOS_DIR_HSDIR_FETCH_OVER_RATE,
