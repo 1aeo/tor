@@ -70,6 +70,7 @@
 #include "core/or/or.h"
 #include "app/config/config.h"
 #include "core/mainloop/connection.h"
+#include "core/or/channel.h"
 #include "core/or/circuitlist.h"
 #include "core/or/connection_or.h"
 #include "feature/dirauth/authmode.h"
@@ -77,6 +78,7 @@
 #include "feature/nodelist/nodelist.h"
 #include "feature/stats/predict_ports.h"
 #include "feature/stats/connstats.h"
+#include "feature/stats/geoip_stats.h"
 #include "feature/stats/rephist.h"
 #include "lib/cc/ctassert.h"
 #include "lib/container/order.h"
@@ -1687,13 +1689,66 @@ static uint64_t create_cells[CHANNEL_PREV_HOP_COUNT];
 /** BEGIN_DIR cells, by previous hop and by place among those of their
  * circuit. */
 static uint64_t begindir_cells[CHANNEL_PREV_HOP_COUNT][NTH_BAND_COUNT];
+/** CREATE and BEGIN_DIR cells, by previous hop and by place among those their
+ * source sent in the same minute. */
+static uint64_t source_cells[2][CHANNEL_PREV_HOP_COUNT][NTH_BAND_COUNT];
 
-/** Note a CREATE cell from a previous hop of kind <b>prev_hop</b>, before we
- * decide whether to accept it. */
+/** Return the source of the circuits that <b>chan</b>, whose peer identified
+ * itself as <b>prev_hop</b>, carries: every client channel from one address
+ * is one source, as tor limits clients by address, and so is each channel
+ * from a relay. Tor tracks client addresses whenever a DoS defense is on,
+ * but only from their last new connection until it forgets them (a day or
+ * two later, or when EntryStatistics resets its history); if it has no entry
+ * for this one, the channel is its own source. */
+static source_minute_t *
+source_minute_of(channel_t *chan, channel_prev_hop_t prev_hop)
+{
+  tor_addr_t addr;
+  clientmap_entry_t *entry;
+
+  if (prev_hop == CHANNEL_PREV_HOP_CLIENT &&
+      channel_get_addr_if_possible(chan, &addr) &&
+      (entry = geoip_lookup_client(&addr, NULL, GEOIP_CLIENT_CONNECT)))
+    return &entry->dos_stats.source_minute;
+  return &chan->source_minute;
+}
+
+/** Note a cell that <b>chan</b>, whose peer identified itself as
+ * <b>prev_hop</b>, carried: a BEGIN_DIR cell if <b>begindir</b>, else a
+ * CREATE cell. Count it by its place among those of its kind that its source
+ * sent in the same minute. Bridges don't count these, so as to say nothing
+ * about their users; nor does a relay without a MetricsPort, the only place
+ * they are shown. */
+static void
+rep_hist_note_source_cell(channel_t *chan, channel_prev_hop_t prev_hop,
+                          bool begindir)
+{
+  const or_options_t *options = get_options();
+  const unsigned minute = (unsigned) (approx_time() / 60 % 4096);
+  source_minute_t *src;
+  unsigned n;
+
+  if (!chan || options->BridgeRelay || !options->MetricsPort_set)
+    return;
+  src = source_minute_of(chan, prev_hop);
+  if (src->minute != minute) {
+    src->minute = minute;
+    src->n_create = src->n_begindir = 0;
+  }
+  if (begindir)
+    n = src->n_begindir = MIN(src->n_begindir + 1, NTH_BAND_MAX);
+  else
+    n = src->n_create = MIN(src->n_create + 1, NTH_BAND_MAX);
+  source_cells[begindir][prev_hop][nth_band_of(n)]++;
+}
+
+/** Note a CREATE cell from <b>chan</b>, whose peer identified itself as
+ * <b>prev_hop</b>, before we decide whether to accept it. */
 void
-rep_hist_note_create_cell(channel_prev_hop_t prev_hop)
+rep_hist_note_create_cell(channel_t *chan, channel_prev_hop_t prev_hop)
 {
   create_cells[prev_hop]++;
+  rep_hist_note_source_cell(chan, prev_hop, false);
 }
 
 /** Note a BEGIN_DIR cell on <b>circ</b>, before we decide whether to accept
@@ -1706,6 +1761,7 @@ rep_hist_note_begindir_cell(or_circuit_t *circ)
   if (circ->n_begindir < NTH_BAND_MAX)
     circ->n_begindir++;
   begindir_cells[circ->prev_hop][nth_band_of(circ->n_begindir)]++;
+  rep_hist_note_source_cell(circ->p_chan, circ->prev_hop, true);
 }
 
 /** Return the numbers of CREATE cells, indexed by the channel_prev_hop_t of
@@ -1722,6 +1778,15 @@ const uint64_t *
 rep_hist_get_begindir_cells(channel_prev_hop_t prev_hop)
 {
   return begindir_cells[prev_hop];
+}
+
+/** Return the numbers of BEGIN_DIR cells if <b>begindir</b>, else CREATE
+ * cells, from previous hops of kind <b>prev_hop</b>, indexed by their
+ * nth_band_t among those their source sent in the same minute. */
+const uint64_t *
+rep_hist_get_source_cells(bool begindir, channel_prev_hop_t prev_hop)
+{
+  return source_cells[begindir][prev_hop];
 }
 
 /******* Connections statistics *******/

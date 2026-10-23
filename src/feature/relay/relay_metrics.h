@@ -79,6 +79,12 @@ typedef enum {
   RELAY_METRICS_NUM_BEGINDIR_CELLS,
   /** Tunneled directory response bytes their stream read, by type. */
   RELAY_METRICS_NUM_BEGINDIR_RESPONSE_BYTES,
+  /** CREATE cells, by previous hop and place among their source's in the
+   * same minute. */
+  RELAY_METRICS_NUM_CREATE_CELL_SOURCES,
+  /** BEGIN_DIR cells, by previous hop and place among their source's in the
+   * same minute. */
+  RELAY_METRICS_NUM_BEGINDIR_CELL_SOURCES,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */

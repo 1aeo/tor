@@ -790,6 +790,8 @@ test_dos_create_cell_prev_hop(void *arg)
 
   MOCK(we_are_hibernating, mock_we_are_hibernating);
   get_options_mutable()->ORPort_set = 1;
+  get_options_mutable()->MetricsPort_set = 1;
+  update_approx_time(1800000000); /* The start of a minute. */
   chan->circ_id_type = CIRC_ID_TYPE_NEITHER;
   memset(&cell, 0, sizeof(cell));
   cell.command = CELL_CREATE2;
@@ -805,6 +807,11 @@ test_dos_create_cell_prev_hop(void *arg)
   tt_u64_op(rep_hist_get_create_cells()[hop], OP_EQ, 2);
   tt_int_op(smartlist_len(circs), OP_EQ, 1);
   tt_int_op(TO_OR_CIRCUIT(smartlist_get(circs, 0))->prev_hop, OP_EQ, hop);
+  /* Both are also counted by their place among the CREATE cells their
+   * source sent in the same minute, and not among its BEGIN_DIR cells. */
+  tt_u64_op(rep_hist_get_source_cells(false, hop)[NTH_BAND_1], OP_EQ, 1);
+  tt_u64_op(rep_hist_get_source_cells(false, hop)[NTH_BAND_2_10], OP_EQ, 1);
+  tt_u64_op(rep_hist_get_source_cells(true, hop)[NTH_BAND_1], OP_EQ, 0);
   chan->is_client = 1;
   cell.circ_id = 2;
   command_process_cell(chan, &cell);

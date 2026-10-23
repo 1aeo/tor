@@ -438,6 +438,8 @@ struct channel_t {
    * this channel in circuitbuild.c
    */
   unsigned int is_local:1;
+  /** Cells this channel sent in its latest minute, if it is from a relay. */
+  source_minute_t source_minute;
 
   /** Have we logged a warning about circID exhaustion on this channel?
    * If so, when? */

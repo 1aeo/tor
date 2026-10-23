@@ -450,6 +450,15 @@ typedef enum channel_prev_hop_t {
   CHANNEL_PREV_HOP_COUNT
 } channel_prev_hop_t;
 
+/** The cells one source of circuits sent in its latest minute: see
+ * rep_hist_note_source_cell(). */
+typedef struct source_minute_t {
+  /** approx_time() / 60 when these cells arrived, modulo 4096. */
+  unsigned int minute : 12;
+  /** CREATE and BEGIN_DIR cells in that minute, stopping at NTH_BAND_MAX. */
+  unsigned int n_create : 10, n_begindir : 10;
+} source_minute_t;
+
 /** Initial value for both sides of a circuit transmission window when the
  * circuit is initialized.  Measured in cells. */
 #define CIRCWINDOW_START 1000

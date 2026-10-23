@@ -31,6 +31,7 @@
 #include "core/or/channel.h"
 #include "core/or/dos.h"
 #include "feature/relay/relay_metrics.h"
+#include "feature/stats/geoip_stats.h"
 #include "feature/stats/rephist.h"
 #include "lib/metrics/metrics_store_entry.h"
 #include "lib/crypt_ops/crypto_format.h"
@@ -1424,6 +1425,102 @@ test_dir_response_bytes_metric(void *arg)
   connection_free_minimal(TO_CONN(conn));
 }
 
+/* tor_relay_<family>{prev_hop, nth} */
+#define SOURCE_METRIC(family, hop, nth) \
+  get_metric2(METRICS_NAME(family), "prev_hop", (hop), "nth", (nth))
+#define CREATE_SOURCE(hop, nth) \
+  SOURCE_METRIC(relay_create_cell_source_total, (hop), (nth))
+#define BEGINDIR_SOURCE(hop, nth) \
+  SOURCE_METRIC(relay_begindir_cell_source_total, (hop), (nth))
+
+/* CREATE and BEGIN_DIR cells are counted by their place among those their
+ * source sent in the same minute: a relay's channel, or every client channel
+ * from one address. Bridges don't count them. */
+static void
+test_source_cell_metrics(void *arg)
+{
+  channel_t *relay = new_fake_channel();
+  channel_t *heavy = new_fake_channel();
+  channel_t *client1 = new_fake_channel();
+  channel_t *client2 = new_fake_channel();
+  or_circuit_t *circ = or_circuit_new(0, NULL);
+  tor_addr_t addr;
+  const time_t t0 = 1800000000; /* The start of a minute. */
+  (void) arg;
+
+  get_options_mutable()->MetricsPort_set = 1;
+  update_approx_time(t0);
+
+  /* Twelve CREATE cells from a relay in one minute. */
+  for (int i = 0; i < 12; i++)
+    rep_hist_note_create_cell(relay, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  tt_i64_op(CREATE_SOURCE("known_relay", "1"), OP_EQ, 1);
+  tt_i64_op(CREATE_SOURCE("known_relay", "2_10"), OP_EQ, 9);
+  tt_i64_op(CREATE_SOURCE("known_relay", "11_100"), OP_EQ, 2);
+  /* BEGIN_DIR cells are counted apart, here through their circuit, until
+   * the last second of the minute. */
+  circ->p_chan = relay;
+  circ->prev_hop = CHANNEL_PREV_HOP_KNOWN_RELAY;
+  rep_hist_note_begindir_cell(circ);
+  update_approx_time(t0 + 59);
+  rep_hist_note_begindir_cell(circ);
+  tt_i64_op(BEGINDIR_SOURCE("known_relay", "1"), OP_EQ, 1);
+  tt_i64_op(BEGINDIR_SOURCE("known_relay", "2_10"), OP_EQ, 1);
+  /* A new minute starts over, for both kinds. */
+  update_approx_time(t0 + 60);
+  rep_hist_note_begindir_cell(circ);
+  rep_hist_note_create_cell(relay, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  tt_i64_op(BEGINDIR_SOURCE("known_relay", "1"), OP_EQ, 2);
+  tt_i64_op(CREATE_SOURCE("known_relay", "1"), OP_EQ, 2);
+  tt_i64_op(CREATE_SOURCE("known_relay", "2_10"), OP_EQ, 9);
+
+  /* A client channel from an address tor doesn't track is its own source. */
+  rep_hist_note_create_cell(client1, CHANNEL_PREV_HOP_CLIENT);
+  rep_hist_note_create_cell(client2, CHANNEL_PREV_HOP_CLIENT);
+  tt_i64_op(CREATE_SOURCE("client", "1"), OP_EQ, 2);
+  /* Once tracked, as tor does whenever a DoS defense is on, the client
+   * channels from one address are one source. */
+  get_options_mutable()->EntryStatistics = 1;
+  tt_assert(channel_get_addr_if_possible(client1, &addr));
+  geoip_note_client_seen(GEOIP_CLIENT_CONNECT, &addr, NULL, t0);
+  rep_hist_note_create_cell(client1, CHANNEL_PREV_HOP_CLIENT);
+  rep_hist_note_create_cell(client2, CHANNEL_PREV_HOP_CLIENT);
+  tt_i64_op(CREATE_SOURCE("client", "1"), OP_EQ, 3);
+  tt_i64_op(CREATE_SOURCE("client", "2_10"), OP_EQ, 1);
+
+  /* The last two bands. A count stops there: the 65537th cell, past what
+   * 16 bits hold, is still the 1001st or later. */
+  for (int i = 0; i < 65537; i++)
+    rep_hist_note_create_cell(heavy, CHANNEL_PREV_HOP_UNKNOWN_RELAY);
+  tt_i64_op(CREATE_SOURCE("unknown_relay", "1"), OP_EQ, 1);
+  tt_i64_op(CREATE_SOURCE("unknown_relay", "101_1000"), OP_EQ, 900);
+  tt_i64_op(CREATE_SOURCE("unknown_relay", "1001_plus"), OP_EQ, 65537 - 1000);
+
+  /* Bridges don't count them, nor does a relay without a MetricsPort, and
+   * those cells don't count towards their source's place in the minute: once
+   * a MetricsPort is added, the next one is the first. A cell without a
+   * channel has no source. */
+  update_approx_time(t0 + 120);
+  get_options_mutable()->BridgeRelay = 1;
+  rep_hist_note_create_cell(relay, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  get_options_mutable()->BridgeRelay = 0;
+  get_options_mutable()->MetricsPort_set = 0;
+  rep_hist_note_create_cell(relay, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  tt_i64_op(CREATE_SOURCE("known_relay", "1"), OP_EQ, 2);
+  get_options_mutable()->MetricsPort_set = 1;
+  rep_hist_note_create_cell(relay, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  rep_hist_note_create_cell(NULL, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  tt_i64_op(CREATE_SOURCE("known_relay", "1"), OP_EQ, 3);
+  tt_i64_op(CREATE_SOURCE("known_relay", "2_10"), OP_EQ, 9);
+
+ done:
+  circuit_free_all();
+  free_fake_channel(relay);
+  free_fake_channel(heavy);
+  free_fake_channel(client1);
+  free_fake_channel(client2);
+}
+
 /* Each new family is exported with its type and number of series (one per
  * previous-hop class, and per nth or type), and with the counted values. */
 static void
@@ -1442,12 +1539,14 @@ test_prev_hop_metric_series(void *arg)
     { METRICS_NAME(relay_begindir_cell_total), 15, "counter" },
     { METRICS_NAME(relay_begindir_request_total), 30, "counter" },
     { METRICS_NAME(relay_begindir_response_bytes_total), 10, "counter" },
+    { METRICS_NAME(relay_create_cell_source_total), 15, "counter" },
+    { METRICS_NAME(relay_begindir_cell_source_total), 15, "counter" },
   };
   or_circuit_t *circ = or_circuit_new(0, NULL);
   (void) arg;
 
-  rep_hist_note_create_cell(CHANNEL_PREV_HOP_KNOWN_RELAY);
-  rep_hist_note_create_cell(CHANNEL_PREV_HOP_KNOWN_RELAY);
+  rep_hist_note_create_cell(NULL, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  rep_hist_note_create_cell(NULL, CHANNEL_PREV_HOP_KNOWN_RELAY);
   for (int i = 0; i < 11; i++)
     rep_hist_note_begindir_cell(circ);
 
@@ -1940,6 +2039,7 @@ struct testcase_t hs_cache[] = {
     NULL, NULL },
   { "dir_response_bytes_metric", test_dir_response_bytes_metric, TT_FORK,
     NULL, NULL },
+  { "source_cell_metrics", test_source_cell_metrics, TT_FORK, NULL, NULL },
   { "dir_server_conns_gauge", test_dir_server_conns_gauge, TT_FORK,
     NULL, NULL },
   { "hsdir_prev_hop_counter", test_hsdir_prev_hop_counter, TT_FORK,

@@ -245,7 +245,7 @@ command_process_create_cell(cell_t *cell, channel_t *chan)
    * function. */
   dos_cc_new_create_cell(chan);
   const channel_prev_hop_t prev_hop = channel_get_prev_hop(chan);
-  rep_hist_note_create_cell(prev_hop);
+  rep_hist_note_create_cell(chan, prev_hop);
 
   /* We check for the conditions that would make us drop the cell before
    * we check for the conditions that would make us send a DESTROY back,
