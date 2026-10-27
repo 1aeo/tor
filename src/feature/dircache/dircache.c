@@ -17,6 +17,7 @@
 #include "core/mainloop/connection.h"
 #include "core/or/circuitlist.h"
 #include "core/or/connection_edge.h"
+#include "core/or/dos.h"
 #include "core/or/relay.h"
 #include "feature/dirauth/dirvote.h"
 #include "feature/dirauth/authmode.h"
@@ -1385,6 +1386,7 @@ hsdir_request_allowed_on_circuit(dir_connection_t *conn)
   circ = TO_OR_CIRCUIT(edge_conn->on_circuit);
 
   if (circ->already_received_hsdir_request) {
+    dos_note_begindir_hsdir_rejected();
     circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_TORPROTOCOL);
     return false;
   }

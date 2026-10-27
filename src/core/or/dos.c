@@ -120,6 +120,9 @@ static uint32_t dos_begindir_burst = DOS_BEGINDIR_BURST_DEFAULT;
 static uint64_t begindir_num_rejected;
 static uint64_t begindir_rate_num_rejected;
 
+/* BEGIN_DIR HSDir requests rejected by the per circuit lifetime limit. */
+static uint64_t begindir_hsdir_num_rejected;
+
 /*
  * General interface of the denial of service mitigation subsystem.
  */
@@ -1061,6 +1064,22 @@ dos_begindir_init_circ_tbf(or_circuit_t *circ)
                         (uint32_t) monotime_coarse_absolute_sec());
 }
 
+/** Record a BEGIN_DIR HSDir request rejected by the per circuit lifetime
+ * limit. */
+void
+dos_note_begindir_hsdir_rejected(void)
+{
+  ++begindir_hsdir_num_rejected;
+}
+
+/** Return the number of BEGIN_DIR HSDir requests rejected by the lifetime
+ * limit. */
+uint64_t
+dos_get_num_begindir_hsdir_rejected(void)
+{
+  return begindir_hsdir_num_rejected;
+}
+
 /* General API */
 
 /* Take any appropriate actions for the given geoip entry that is about to get
@@ -1271,6 +1290,9 @@ dos_log_heartbeat(void)
   }
 
   /* HS DoS stats. */
+  smartlist_add_asprintf(elems,
+                         "%" PRIu64 " BEGIN_DIR HSDir requests rejected",
+                         dos_get_num_begindir_hsdir_rejected());
   smartlist_add_asprintf(elems,
                          "%" PRIu64 " INTRODUCE2 rejected",
                          hs_dos_get_intro2_rejected_count());

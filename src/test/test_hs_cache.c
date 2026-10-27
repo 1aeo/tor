@@ -25,8 +25,11 @@
 #include "core/proto/proto_http.h"
 #include "core/or/circuitlist.h"
 #include "core/or/channel.h"
+#include "core/or/dos.h"
+#include "feature/relay/relay_metrics.h"
 #include "lib/crypt_ops/crypto_format.h"
 #include "lib/crypt_ops/crypto_rand.h"
+#include "lib/metrics/metrics_store.h"
 
 #include "core/or/edge_connection_st.h"
 #include "core/or/or_circuit_st.h"
@@ -35,6 +38,7 @@
 #include "feature/nodelist/networkstatus_st.h"
 
 #include "test/hs_test_helpers.h"
+#include "test/log_test_helpers.h"
 #include "test/test_helpers.h"
 #include "test/test.h"
 
@@ -122,6 +126,9 @@ test_hsdir_request_limit(void *arg)
   or_circuit_t *circ = NULL, *fresh = NULL, *missing = NULL, *invalid = NULL;
   or_circuit_t *client = NULL;
   or_options_t *options = get_options_mutable();
+  buf_t *metrics = buf_new();
+  char *metrics_output = NULL;
+  size_t metrics_len;
 
   init_test();
   options->ORPort_set = 1;
@@ -164,18 +171,29 @@ test_hsdir_request_limit(void *arg)
     tt_int_op(hsdir_request_on_circuit(circ, get_headers, NULL), OP_EQ, 200);
   }
   tt_int_op(circ->already_received_hsdir_request, OP_EQ, 1);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 0);
   /* A second HSDir request is rejected and closes the circuit. */
-  tt_int_op(hsdir_request_on_circuit(circ, get_headers, NULL), OP_EQ, 0);
+  if (post_first) {
+    tt_int_op(hsdir_request_on_circuit(circ, get_headers, NULL), OP_EQ, 0);
+  } else {
+    tt_int_op(hsdir_request_on_circuit(circ, post_headers, encoded), OP_EQ, 0);
+  }
   tt_assert(TO_CIRCUIT(circ)->marked_for_close);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 1);
 
   /* The allowance is per circuit, not per channel or blinded key. */
   tt_int_op(hsdir_request_on_circuit(fresh, get_headers, NULL), OP_EQ, 200);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 1);
 
   /* Missing descriptors and malformed uploads also consume the allowance. */
   tt_int_op(hsdir_request_on_circuit(missing, missing_get, NULL), OP_EQ, 404);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 1);
   tt_int_op(hsdir_request_on_circuit(missing, get_headers, NULL), OP_EQ, 0);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 2);
   tt_int_op(hsdir_request_on_circuit(invalid, post_headers, ""), OP_EQ, 400);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 2);
   tt_int_op(hsdir_request_on_circuit(invalid, get_headers, NULL), OP_EQ, 0);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 3);
 
   /* Unauthenticated clients/bridges still cannot fetch or upload at all. */
   channel_mark_client(&chan);
@@ -185,8 +203,29 @@ test_hsdir_request_limit(void *arg)
   tt_int_op(client->already_received_hsdir_request, OP_EQ, 0);
   tt_int_op(hsdir_request_on_circuit(client, GET("/tor/robots.txt"), NULL),
             OP_EQ, 200);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 3);
+
+  /* HSDir rejections are reported independently of the BEGIN_DIR defenses. */
+  tt_u64_op(dos_get_num_begindir_rejected(), OP_EQ, 0);
+  tt_u64_op(dos_get_num_begindir_rate_rejected(), OP_EQ, 0);
+  setup_capture_of_logs(LOG_NOTICE);
+  dos_log_heartbeat();
+  expect_log_msg_containing("3 BEGIN_DIR HSDir requests rejected");
+
+  const smartlist_t *stores = relay_metrics_get_stores();
+  tt_int_op(smartlist_len(stores), OP_EQ, 1);
+  metrics_store_get_output(METRICS_FORMAT_PROMETHEUS,
+                           smartlist_get(stores, 0), metrics);
+  metrics_output = buf_get_contents(metrics, &metrics_len);
+  tt_assert(metrics_output);
+  tt_assert(strstr(metrics_output,
+                  "tor_relay_dos_total{"
+                  "type=\"begindir_hsdir_rejected\"} 3\n"));
 
  done:
+  teardown_capture_of_logs();
+  buf_free(metrics);
+  tor_free(metrics_output);
   UNMOCK(connection_write_to_buf_impl_);
   UNMOCK(channel_get_addr_if_possible);
   or_circuit_t *circs[] = { circ, fresh, missing, invalid, client };
