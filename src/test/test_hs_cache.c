@@ -84,7 +84,7 @@ hsdir_request_on_circuit(or_circuit_t *circ, const char *headers,
   tor_addr_from_ipv4h(&conn->base_.addr, 0x7f000001);
   conn->base_.address = tor_strdup("127.0.0.1");
   connection_link_connections(TO_CONN(conn), TO_CONN(edge));
-  edge->on_circuit = TO_CIRCUIT(circ);
+  edge->on_circuit = circ ? TO_CIRCUIT(circ) : NULL;
 
   if (body) {
     tt_int_op(directory_handle_command_post(conn, headers, body, strlen(body)),
@@ -179,6 +179,14 @@ test_hsdir_request_limit(void *arg)
     tt_int_op(hsdir_request_on_circuit(circ, post_headers, encoded), OP_EQ, 0);
   }
   tt_assert(TO_CIRCUIT(circ)->marked_for_close);
+  tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 1);
+
+  /* Queued requests on a closing or detached circuit get no HTTP response,
+   * and do not count as additional lifetime-limit rejections. */
+  tt_int_op(hsdir_request_on_circuit(circ, get_headers, NULL), OP_EQ, 0);
+  tt_int_op(hsdir_request_on_circuit(circ, post_headers, encoded), OP_EQ, 0);
+  tt_int_op(hsdir_request_on_circuit(NULL, get_headers, NULL), OP_EQ, 0);
+  tt_int_op(hsdir_request_on_circuit(NULL, post_headers, encoded), OP_EQ, 0);
   tt_u64_op(dos_get_num_begindir_hsdir_rejected(), OP_EQ, 1);
 
   /* The allowance is per circuit, not per channel or blinded key. */
