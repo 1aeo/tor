@@ -1,0 +1,6 @@
+  o Minor features (directory authority):
+    - Directory authorities now assign the HSDir flag to a relay that had it in
+      a recent consensus even if its uptime is below
+      MinUptimeHidServDirectoryV2, so a restart no longer costs a relay its
+      HSDir flag for 96 hours. All other HSDir requirements still apply.
+      Fixes ticket 41175.
