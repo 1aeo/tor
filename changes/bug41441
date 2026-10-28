@@ -1,0 +1,8 @@
+  o Minor bugfixes (relay, channel padding):
+    - Clamp the netflow padding timeouts a peer negotiates with
+      PADDING_NEGOTIATE to the consensus maximum (60 seconds). Previously
+      a client could ask for up to 65.5 seconds, which the padding
+      scheduler then mistook for a clock jump once per second for
+      as long as the connection stayed idle, emitting an unthrottled
+      "Bug:" warning and a padding cell each time. Fixes bug 41441;
+      bugfix on 0.3.1.1-alpha.

@@ -1,0 +1,5 @@
+  o Minor bugfixes (security):
+    - Fix a bug that a minority of directory authorities could use
+      to prevent a valid consensus from being generated.
+      Fixes bug 41456; bugfix on 0.2.1.5-alpha.
+      Tracked as TROVE-2026-072.

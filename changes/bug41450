@@ -1,0 +1,6 @@
+  o Major bugfixes (clients):
+    - When an exit relay refuses a stream because it's hibernating or
+      out of file descriptors, clients would mark that relay as unsuitable
+      for exiting until the next restart. Now forgive the relay when
+      the next consensus arrives, which goes with the fix we already
+      made in ticket 7582. Fixes bug 41450; bugfix on 0.2.3.1-alpha.

@@ -785,6 +785,10 @@ nodelist_set_consensus(const networkstatus_t *ns)
           (tor_addr_is_null(&rs->ipv6_addr) == 0 ||
            (node->md && tor_addr_is_null(&node->md->ipv6_addr) == 0)))
         node->ipv6_preferred = 1;
+      /* forgive any annotations that made us avoid using this
+       * relay as an exit "for a while"; see the callers of
+       * policies_set_node_exitpolicy_to_reject_all(). */
+      node->rejects_all = 0;
     }
 
   } SMARTLIST_FOREACH_END(rs);

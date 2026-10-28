@@ -2335,7 +2335,7 @@ networkstatus_compute_consensus(smartlist_t *votes,
           tor_asprintf(&guardfraction_str,
                        " GuardFraction=%u", rs_out.guardfraction_percentage);
         }
-        smartlist_add_asprintf(chunks, "w Bandwidth=%d%s%s\n",
+        smartlist_add_asprintf(chunks, "w Bandwidth=%u%s%s\n",
                                rs_out.bandwidth_kb,
                                unmeasured?" Unmeasured=1":"",
                                guardfraction_str ? guardfraction_str : "");
