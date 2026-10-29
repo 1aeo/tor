@@ -469,6 +469,9 @@ fill_dos_values(void)
       dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP) },
     { "hsdir_fetch_over_rate",
       dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE) },
+    { "hsdir_fetch_pressure",
+      dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE) },
+    { "hsdir_fetch_shed", dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED) },
   };
 
   for (size_t i = 0; i < ARRAY_LENGTH(entries); i++) {

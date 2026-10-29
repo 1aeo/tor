@@ -155,8 +155,9 @@ typedef enum {
   /** Not over an anonymous circuit, because the previous hop never
    * authenticated (see connection_dir_is_anonymous()): 503. */
   HSDIR_GET_SINGLE_HOP,
-  /** Refused by a DoS defense: no answer if it was the second HSDir request
-   * on its circuit, a 503 if HSDirRefuseUnknownPrevHop refused it. */
+  /** Refused by a DoS defense: no answer, closing the circuit, if it was the
+   * second HSDir request on its circuit or HSDirFetchShedding shed it, and a
+   * 503 if HSDirRefuseUnknownPrevHop refused it. */
   HSDIR_GET_REFUSED,
 
   HSDIR_GET_ACTION_COUNT

@@ -92,6 +92,12 @@ typedef enum dos_dir_stat_t {
   /** Fetches of a cached onion service descriptor over
    * HSDirDescriptorFetchRate. */
   DOS_DIR_HSDIR_FETCH_OVER_RATE,
+  /** Fetches of a cached onion service descriptor while the HSDir is over
+   * HSDirFetchBudget, or in the second after. */
+  DOS_DIR_HSDIR_FETCH_PRESSURE,
+  /** Such fetches that the HSDir sheds, or would if
+   * HSDirFetchShedding were enabled. */
+  DOS_DIR_HSDIR_FETCH_SHED,
 
   DOS_DIR_STAT_COUNT
 } dos_dir_stat_t;
@@ -100,6 +106,7 @@ void dos_note_dir_stat(dos_dir_stat_t stat);
 uint64_t dos_get_dir_stat(dos_dir_stat_t stat);
 int dos_should_refuse_unknown_hsdir_prev_hop(void);
 bool dos_hsdir_note_desc_fetch(token_bucket_ctr_t *bucket);
+bool dos_hsdir_desc_fetch_allowed(token_bucket_ctr_t *bucket, size_t len);
 void dos_note_circ_max_outq(const channel_t *chan);
 void dos_note_begindir_hsdir_rejected(void);
 
@@ -266,6 +273,9 @@ MOCK_DECL(STATIC unsigned int, get_param_begindir_limit_enabled,
           (const networkstatus_t *ns));
 MOCK_DECL(STATIC unsigned int, get_param_begindir_rate_enabled,
           (const networkstatus_t *ns));
+
+STATIC uint64_t hsdir_fetch_budget(void);
+MOCK_DECL(STATIC uint32_t, hsdir_fetch_lottery_draw, (void));
 
 #endif /* defined(DOS_PRIVATE) */
 
