@@ -21,6 +21,13 @@ Changes in version 0.4.9.15 - 2026-10-28
       bandwidth. Because of this change, Tor versions 0.4.8 and earlier
       will no longer work on the network.
 
+  o Major bugfixes (clients):
+    - When an exit relay refuses a stream because it's hibernating or
+      out of file descriptors, clients would mark that relay as unsuitable
+      for exiting until the next restart. Now forgive the relay when
+      the next consensus arrives, which goes with the fix we already
+      made in ticket 7582. Fixes bug 41450; bugfix on 0.2.3.1-alpha.
+
   o Major features (directory authority):
     - Directory authorities provide a new consensus method that omits
       _all_ TAP keys and family lists from microdescriptors. This change
@@ -108,6 +115,21 @@ Changes in version 0.4.9.15 - 2026-10-28
       connection) to serve items in the wrong order, leading to
       temporary starvation for higher-priority circuits. Fixes bug
       41428; bugfix on 0.2.2.7-alpha.
+
+  o Minor bugfixes (security):
+    - Fix a bug that a minority of directory authorities could use
+      to prevent a valid consensus from being generated.
+      Fixes bug 41456; bugfix on 0.2.1.5-alpha.
+      Tracked as TROVE-2026-072.
+
+  o Minor bugfixes (relay, channel padding):
+    - Clamp the netflow padding timeouts a peer negotiates with
+      PADDING_NEGOTIATE to the consensus maximum (60 seconds). Previously
+      a client could ask for up to 65.5 seconds, which the padding
+      scheduler then mistook for a clock jump once per second for
+      as long as the connection stayed idle, emitting an unthrottled
+      "Bug:" warning and a padding cell each time. Fixes bug 41441;
+      bugfix on 0.3.1.1-alpha.
 
 
 Changes in version 0.4.9.14 - 2026-10-07
