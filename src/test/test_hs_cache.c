@@ -36,6 +36,7 @@
 #include "lib/metrics/metrics_store.h"
 
 #include "core/or/edge_connection_st.h"
+#include "core/or/dos_options_st.h"
 #include "core/or/or_circuit_st.h"
 #include "core/or/or_connection_st.h"
 #include "feature/dircommon/dir_connection_st.h"
@@ -45,6 +46,7 @@
 #include "test/fakechans.h"
 #include "test/hs_test_helpers.h"
 #include "test/log_test_helpers.h"
+#include "test/opts_test_helpers.h"
 #include "test/test_helpers.h"
 #include "test/test.h"
 
@@ -1439,6 +1441,80 @@ test_hsdir_prev_hop_counter(void *arg)
   free_fake_channel(chan);
 }
 
+/* HSDirRefuseUnknownPrevHop only refuses when the torrc, or else the
+ * consensus, enables it, and only on public relays. Requests are counted
+ * either way, and refused ones as "refused". */
+static void
+test_hsdir_prev_hop_defense(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  routerstatus_t known_rs;
+  dos_options_t *dos_opts;
+  or_circuit_t *circ;
+  const char *get = GET("/tor/hs/3/x");
+  const char *post = "POST /tor/hs/3/publish HTTP/1.0\r\n\r\n";
+  (void) arg;
+
+  init_test();
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  mock_hsdir_ns = tor_malloc_zero(sizeof(networkstatus_t));
+  mock_hsdir_ns->net_params = smartlist_new();
+  mock_hsdir_ns->routerstatus_list = smartlist_new();
+  MOCK(networkstatus_get_latest_consensus, mock_hsdir_get_latest_consensus);
+  get_options_mutable()->ORPort_set = 1;
+  dos_opts = get_dos_options(get_options_mutable());
+  memset(&known_rs, 0, sizeof(known_rs)); /* Matches the zeroed identity. */
+
+  /* By default, a request from an unknown relay is served. */
+  circ = new_or_circ(chan);
+  tt_int_op(hsdir_request_on_circuit(circ, get, NULL), OP_EQ, 404);
+
+  /* The consensus can refuse unknown previous hops, but not known ones, by
+   * closing the circuit without an answer, after tor's limit of one request
+   * per circuit. */
+  smartlist_add_strdup(mock_hsdir_ns->net_params,
+                       "HSDirRefuseUnknownPrevHop=1");
+  tt_int_op(hsdir_request_on_circuit(circ, get, NULL), OP_EQ, 0);
+  circ = new_or_circ(chan);
+  tt_int_op(hsdir_request_on_circuit(circ, get, NULL), OP_EQ, 0);
+  tt_assert(TO_CIRCUIT(circ)->marked_for_close);
+  tt_int_op(hsdir_request_on_new_circ(chan, post, "x"), OP_EQ, 0);
+  smartlist_add(mock_hsdir_ns->routerstatus_list, &known_rs);
+  tt_int_op(hsdir_request_on_new_circ(chan, get, NULL), OP_EQ, 404);
+  smartlist_clear(mock_hsdir_ns->routerstatus_list);
+  /* The torrc overrides the consensus, either way. */
+  dos_opts->HSDirRefuseUnknownPrevHop = 0;
+  tt_int_op(hsdir_request_on_new_circ(chan, get, NULL), OP_EQ, 404);
+  SMARTLIST_FOREACH(mock_hsdir_ns->net_params, char *, cp, tor_free(cp));
+  smartlist_clear(mock_hsdir_ns->net_params);
+  dos_opts->HSDirRefuseUnknownPrevHop = 1;
+  tt_int_op(hsdir_request_on_new_circ(chan, get, NULL), OP_EQ, 0);
+
+  /* Each request was counted once: the 4 refused ones as refused, and the 3
+   * others as not found. */
+  tt_i64_op(GET_METRIC("refused"), OP_EQ, 3);
+  tt_i64_op(POST_METRIC("refused"), OP_EQ, 1);
+  tt_i64_op(GET_METRIC("not_found"), OP_EQ, 3);
+  /* hsdir_unknown_prev_hop counts what the defense refuses or would refuse:
+   * the requests while the previous hop was unknown, less the second one on
+   * a circuit. */
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP), OP_EQ, 5);
+
+  /* Relays that aren't public never refuse. */
+  get_options_mutable()->ORPort_set = 0;
+  tt_int_op(dos_should_refuse_unknown_hsdir_prev_hop(), OP_EQ, 0);
+
+ done:
+  UNMOCK(connection_write_to_buf_impl_);
+  UNMOCK(networkstatus_get_latest_consensus);
+  SMARTLIST_FOREACH(mock_hsdir_ns->net_params, char *, cp, tor_free(cp));
+  smartlist_free(mock_hsdir_ns->net_params);
+  smartlist_free(mock_hsdir_ns->routerstatus_list);
+  tor_free(mock_hsdir_ns);
+  circuit_free_all();
+  free_fake_channel(chan);
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -1466,6 +1542,8 @@ struct testcase_t hs_cache[] = {
   { "dir_server_conns_gauge", test_dir_server_conns_gauge, TT_FORK,
     NULL, NULL },
   { "hsdir_prev_hop_counter", test_hsdir_prev_hop_counter, TT_FORK,
+    NULL, NULL },
+  { "hsdir_prev_hop_defense", test_hsdir_prev_hop_defense, TT_FORK,
     NULL, NULL },
   { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },

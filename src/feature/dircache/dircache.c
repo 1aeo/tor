@@ -1435,16 +1435,28 @@ hsdir_request_allowed_on_circuit(dir_connection_t *conn)
 
 /** Count the onion service directory request on <b>conn</b>, which
  * connection_dir_is_anonymous() and hsdir_request_allowed_on_circuit()
- * accepted, if its previous hop is not a known relay. Stock tor and Arti
- * build those circuits through relays in the consensus. */
-static void
-note_hs_dir_request(dir_connection_t *conn)
+ * accepted, if its previous hop is not a known relay: stock tor and Arti
+ * build those circuits through relays in the consensus. Return false, having
+ * closed its circuit, if HSDirRefuseUnknownPrevHop refuses it. Relays
+ * fetching other documents over one-hop circuits don't make these requests,
+ * so the rule doesn't cover them. */
+static bool
+allow_hs_dir_request(dir_connection_t *conn)
 {
-  const or_circuit_t *circ =
+  or_circuit_t *circ =
     TO_OR_CIRCUIT(TO_EDGE_CONN(TO_CONN(conn)->linked_conn)->on_circuit);
 
-  if (!connection_or_digest_is_known_relay(circ->p_chan->identity_digest))
-    dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
+  if (connection_or_digest_is_known_relay(circ->p_chan->identity_digest))
+    return true;
+  dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
+  if (!dos_should_refuse_unknown_hsdir_prev_hop())
+    return true;
+  static ratelim_t prev_hop_lim = RATELIM_INIT(600);
+  log_fn_ratelim(&prev_hop_lim, LOG_PROTOCOL_WARN, LD_REND,
+                 "Refusing an onion service directory request from unknown "
+                 "relay %s.", safe_str(channel_describe_peer(circ->p_chan)));
+  circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_RESOURCELIMIT);
+  return false;
 }
 
 /** Helper function for GET `/tor/hs/3/...`. Only for version 3.
@@ -1471,11 +1483,11 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
                               "Rejecting single hop HS v3 descriptor request");
     goto done;
   }
-  if (!hsdir_request_allowed_on_circuit(conn)) {
+  if (!hsdir_request_allowed_on_circuit(conn) ||
+      !allow_hs_dir_request(conn)) {
     relay_increment_hsdir_get_action(HSDIR_GET_REFUSED);
     goto done;
   }
-  note_hs_dir_request(conn);
 
   /* After the path prefix follows the base64 encoded blinded pubkey which we
    * use to get the descriptor from the cache. Skip the prefix and get the
@@ -1735,11 +1747,11 @@ directory_handle_command_post,(dir_connection_t *conn, const char *headers,
                                 "Rejecting single hop HS descriptor post");
       goto done;
     }
-    if (!hsdir_request_allowed_on_circuit(conn)) {
+    if (!hsdir_request_allowed_on_circuit(conn) ||
+        !allow_hs_dir_request(conn)) {
       relay_increment_hsdir_post_action(HSDIR_POST_REFUSED);
       goto done;
     }
-    note_hs_dir_request(conn);
     const char *msg = "HS descriptor stored successfully.";
 
     /* We most probably have a publish request for an HS descriptor. */

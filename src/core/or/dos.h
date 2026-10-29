@@ -95,6 +95,7 @@ typedef enum dos_dir_stat_t {
 
 void dos_note_dir_stat(dos_dir_stat_t stat);
 uint64_t dos_get_dir_stat(dos_dir_stat_t stat);
+int dos_should_refuse_unknown_hsdir_prev_hop(void);
 void dos_note_circ_max_outq(const channel_t *chan);
 void dos_note_begindir_hsdir_rejected(void);
 
