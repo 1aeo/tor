@@ -823,6 +823,28 @@ dos_get_dir_stat(dos_dir_stat_t stat)
   return dos_dir_stats[stat];
 }
 
+/* Return whether the defense with the AUTOBOOL torrc option <b>opt</b> and
+ * the consensus parameter <b>name</b> (default 0) is enabled. If we aren't a
+ * public relay, it shouldn't apply to anything. */
+static int
+dos_defense_enabled(int opt, const char *name)
+{
+  if (!public_server_mode(get_options()))
+    return 0;
+  if (opt != -1)
+    return opt;
+  return (int) networkstatus_get_param(NULL, name, 0 /* default */, 0, 1);
+}
+
+/** Return true iff an HSDir should refuse an onion service directory request
+ * whose previous hop is not a known relay. */
+int
+dos_should_refuse_unknown_hsdir_prev_hop(void)
+{
+  return dos_defense_enabled(dos_get_options()->HSDirRefuseUnknownPrevHop,
+                             "HSDirRefuseUnknownPrevHop");
+}
+
 /* Called when a CREATE cell is received from the given channel. */
 void
 dos_cc_new_create_cell(channel_t *chan)
@@ -1226,18 +1248,9 @@ dos_note_refuse_single_hop_client(void)
 int
 dos_should_refuse_single_hop_client(void)
 {
-  /* If we aren't a public relay, this shouldn't apply to anything. */
-  if (!public_server_mode(get_options())) {
-    return 0;
-  }
-
-  if (dos_get_options()->DoSRefuseSingleHopClientRendezvous != -1) {
-    return dos_get_options()->DoSRefuseSingleHopClientRendezvous;
-  }
-
-  return (int) networkstatus_get_param(NULL,
-                                       "DoSRefuseSingleHopClientRendezvous",
-                                       0 /* default */, 0, 1);
+  return dos_defense_enabled(
+                      dos_get_options()->DoSRefuseSingleHopClientRendezvous,
+                      "DoSRefuseSingleHopClientRendezvous");
 }
 
 /* Log a heartbeat message with some statistics. */
@@ -1313,6 +1326,14 @@ dos_log_heartbeat(void)
   smartlist_add_asprintf(elems,
                          "%" PRIu64 " INTRODUCE2 rejected",
                          hs_dos_get_intro2_rejected_count());
+
+  if (dos_should_refuse_unknown_hsdir_prev_hop()) {
+    smartlist_add_asprintf(elems,
+                           "%" PRIu64 " HSDir requests from unknown relays",
+                           dos_dir_stats[DOS_DIR_HSDIR_UNKNOWN_PREV_HOP]);
+  } else {
+    smartlist_add_asprintf(elems, "[HSDirRefuseUnknownPrevHop disabled]");
+  }
 
   char *msg = smartlist_join_strings(elems, ", ", 0, NULL);
 

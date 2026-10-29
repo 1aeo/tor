@@ -6,6 +6,7 @@
 #define CIRCUITLIST_PRIVATE
 
 #include "core/or/or.h"
+#include "app/config/config.h"
 #include "core/or/dos.h"
 #include "core/or/circuitlist.h"
 #include "lib/crypt_ops/crypto_rand.h"
@@ -19,11 +20,14 @@
 
 #include "feature/nodelist/networkstatus_st.h"
 #include "core/or/or_circuit_st.h"
+#include "app/config/or_options_st.h"
+#include "core/or/dos_options_st.h"
 #include "core/or/or_connection_st.h"
 #include "feature/nodelist/routerstatus_st.h"
 
 #include "test/test.h"
 #include "test/log_test_helpers.h"
+#include "test/opts_test_helpers.h"
 
 static const uint64_t BILLION = 1000000000;
 
@@ -613,6 +617,55 @@ test_dos_begindir_limit(void *arg)
   dos_free_all();
 }
 
+/** Test that dos_should_refuse_single_hop_client() follows the torrc, else
+ * the consensus, and only applies on public relays. */
+static void
+test_dos_refuse_single_hop(void *arg)
+{
+  dos_options_t *dos_opts = get_dos_options(get_options_mutable());
+  (void) arg;
+
+  MOCK(networkstatus_get_latest_consensus,
+       mock_networkstatus_get_latest_consensus);
+  dummy_ns = tor_malloc_zero(sizeof(networkstatus_t));
+  dummy_ns->net_params = smartlist_new();
+  smartlist_add(dummy_ns->net_params,
+                (char *) "DoSRefuseSingleHopClientRendezvous=1");
+  get_options_mutable()->ORPort_set = 1;
+  tt_int_op(dos_should_refuse_single_hop_client(), OP_EQ, 1);
+  dos_opts->DoSRefuseSingleHopClientRendezvous = 0;
+  tt_int_op(dos_should_refuse_single_hop_client(), OP_EQ, 0);
+  dos_opts->DoSRefuseSingleHopClientRendezvous = 1;
+  get_options_mutable()->ORPort_set = 0;
+  tt_int_op(dos_should_refuse_single_hop_client(), OP_EQ, 0);
+
+ done:
+  UNMOCK(networkstatus_get_latest_consensus);
+  if (dummy_ns)
+    smartlist_free(dummy_ns->net_params);
+  tor_free(dummy_ns);
+}
+
+/** Test that the heartbeat shows the directory request counts of each
+ * defense once it is enabled. */
+static void
+test_dos_dir_heartbeat(void *arg)
+{
+  dos_options_t *dos_opts = get_dos_options(get_options_mutable());
+  (void) arg;
+
+  get_options_mutable()->ORPort_set = 1;
+  dos_opts->HSDirRefuseUnknownPrevHop = 1;
+  dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
+  dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
+  setup_full_capture_of_logs(LOG_NOTICE);
+  dos_log_heartbeat();
+  expect_single_log_msg_containing("2 HSDir requests from unknown relays");
+
+ done:
+  teardown_capture_of_logs();
+}
+
 struct testcase_t dos_tests[] = {
   { "conn_creation", test_dos_conn_creation, TT_FORK, NULL, NULL },
   { "circuit_creation", test_dos_circuit_creation, TT_FORK, NULL, NULL },
@@ -621,5 +674,7 @@ struct testcase_t dos_tests[] = {
     NULL, NULL },
   { "conn_rate", test_dos_conn_rate, TT_FORK, NULL, NULL },
   { "begindir_limit", test_dos_begindir_limit, TT_FORK, NULL, NULL },
+  { "refuse_single_hop", test_dos_refuse_single_hop, TT_FORK, NULL, NULL },
+  { "dir_heartbeat", test_dos_dir_heartbeat, TT_FORK, NULL, NULL },
   END_OF_TESTCASES
 };

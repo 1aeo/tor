@@ -82,4 +82,9 @@ CONF_VAR(DoSBeginDirDefenseType, INT, 0, "0")
 * value. */
 CONF_VAR(DoSConnectionConnectDefenseTimePeriod, INTERVAL, 0, "0")
 
+/** Autobool: Should an HSDir refuse an onion service directory request whose
+ * previous hop is not a known relay? Overrides the consensus parameter of the
+ * same name. */
+CONF_VAR(HSDirRefuseUnknownPrevHop, AUTOBOOL, 0, "auto")
+
 END_CONF_STRUCT(dos_options_t)

@@ -20,6 +20,7 @@
 
 #include "lib/crypt_ops/crypto_sys.h"
 #include "feature/dirauth/dirauth_sys.h"
+#include "core/or/dos_sys.h"
 
 struct dirauth_options_t *
 get_dirauth_options(struct or_options_t *opt)
@@ -33,6 +34,14 @@ struct crypto_options_t *
 get_crypto_options(struct or_options_t *opt)
 {
   int idx = subsystems_get_options_idx(&sys_crypto);
+  tor_assert(idx >= 0);
+  return config_mgr_get_obj_mutable(get_options_mgr(), opt, idx);
+}
+
+struct dos_options_t *
+get_dos_options(struct or_options_t *opt)
+{
+  int idx = subsystems_get_options_idx(&sys_dos);
   tor_assert(idx >= 0);
   return config_mgr_get_obj_mutable(get_options_mgr(), opt, idx);
 }

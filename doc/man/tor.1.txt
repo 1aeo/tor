@@ -3186,6 +3186,21 @@ The following options are useful only for a directory cache.
     controlled by a consensus parameter. If not defined in the consensus, the
     value is 60. (Default: 0)
 
+The following options are useful only for an onion service directory
+(HSDir). Whatever their value, the requests they apply to are counted on the
+MetricsPort.
+
+[[HSDirRefuseUnknownPrevHop]] **HSDirRefuseUnknownPrevHop** **0**|**1**|**auto**::
+
+    Refuse, by closing its circuit, an onion service descriptor fetch or
+    upload whose previous hop is not a relay in our consensus or for which we
+    have a descriptor: the check RefuseUnknownExits applies to exit streams. A
+    relay that is new in the client's consensus but not yet in ours is also
+    refused, so clients then use another HSDir. Such requests are counted as
+    tor_relay_dos_total\{type="hsdir_unknown_prev_hop"}. "auto" means use
+    the consensus parameter. If not defined in the consensus, the value is
+    0. (Default: auto)
+
 
 For onion services, mitigations are a work in progress and multiple options
 are currently available.

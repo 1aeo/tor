@@ -18,5 +18,6 @@ struct or_options_t;
 
 struct crypto_options_t *get_crypto_options(struct or_options_t *opt);
 struct dirauth_options_t *get_dirauth_options(struct or_options_t *opt);
+struct dos_options_t *get_dos_options(struct or_options_t *opt);
 
 #endif /* !defined(TOR_TEST_OPTS_TESTING_HELPERS_H) */
