@@ -45,12 +45,14 @@ metrics_request_allowed(const tor_addr_t *peer_addr)
   return metrics_policy_permits_address(peer_addr);
 }
 
-/** Helper: For a metrics port connection, write the HTTP response header
- * using the data length passed. */
-static void
-write_metrics_http_response(const size_t data_len, connection_t *conn)
+/** Helper: Return a newly allocated buffer holding the whole MetricsPort HTTP
+ * response: headers followed by the output of all subsystems. */
+static buf_t *
+metrics_get_http_response(void)
 {
   char date[RFC1123_TIME_LEN+1];
+  buf_t *data = metrics_get_output(the_format);
+  const size_t data_len = buf_datalen(data);
   buf_t *buf = buf_new_with_capacity(128 + data_len);
 
   format_rfc1123_time(date, approx_time());
@@ -58,9 +60,31 @@ write_metrics_http_response(const size_t data_len, connection_t *conn)
   buf_add_printf(buf, "Content-Type: text/plain; charset=utf-8\r\n");
   buf_add_printf(buf, "Content-Length: %" TOR_PRIuSZ "\r\n", data_len);
   buf_add_string(buf, "\r\n");
+  buf_move_all(buf, data);
 
-  connection_buf_add_buf(conn, buf);
-  buf_free(buf);
+  buf_free(data);
+  return buf;
+}
+
+/** Helper: Return NULL if <b>headers</b> starts with a GET /metrics request,
+ * else the HTTP error response to send back. */
+static const char *
+metrics_check_http_request(const char *headers)
+{
+  char *command = NULL, *url = NULL;
+  const char *errmsg = NULL;
+
+  if (parse_http_command(headers, &command, &url) < 0) {
+    errmsg = "HTTP/1.0 400 Bad Request\r\n\r\n";
+  } else if (strcmp(command, "GET")) {
+    errmsg = "HTTP/1.0 405 Method Not Allowed\r\n\r\n";
+  } else if (strcmp(url, "/metrics")) {
+    errmsg = "HTTP/1.0 404 Not Found\r\n\r\n";
+  }
+
+  tor_free(command);
+  tor_free(url);
+  return errmsg;
 }
 
 /** Return newly allocated buffer containing the output of all subsystems
@@ -100,7 +124,7 @@ int
 metrics_connection_process_inbuf(connection_t *conn)
 {
   int ret = -1;
-  char *headers = NULL, *command = NULL, *url = NULL;
+  char *headers = NULL;
   const char *errmsg = NULL;
 
   tor_assert(conn);
@@ -124,31 +148,14 @@ metrics_connection_process_inbuf(connection_t *conn)
     goto done;
   }
 
-  const int cmd_status = parse_http_command(headers, &command, &url);
-  if (cmd_status < 0) {
-    errmsg = "HTTP/1.0 400 Bad Request\r\n\r\n";
-    goto err;
-  } else if (strcmpstart(command, "GET")) {
-    errmsg = "HTTP/1.0 405 Method Not Allowed\r\n\r\n";
+  errmsg = metrics_check_http_request(headers);
+  if (errmsg) {
     goto err;
   }
-  tor_assert(url);
 
-  /* Where we expect the query to come for. */
-#define EXPECTED_URL_PATH "/metrics"
-#define EXPECTED_URL_PATH_LEN (sizeof(EXPECTED_URL_PATH) - 1) /* No NUL */
-
-  if (!strcmpstart(url, EXPECTED_URL_PATH) &&
-      strlen(url) == EXPECTED_URL_PATH_LEN) {
-    buf_t *data = metrics_get_output(the_format);
-
-    write_metrics_http_response(buf_datalen(data), conn);
-    connection_buf_add_buf(conn, data);
-    buf_free(data);
-  } else {
-    errmsg = "HTTP/1.0 404 Not Found\r\n\r\n";
-    goto err;
-  }
+  buf_t *data = metrics_get_http_response();
+  connection_buf_add_buf(conn, data);
+  buf_free(data);
 
   ret = 0;
   goto done;
@@ -162,8 +169,6 @@ metrics_connection_process_inbuf(connection_t *conn)
 
  done:
   tor_free(headers);
-  tor_free(command);
-  tor_free(url);
 
   return ret;
 }
