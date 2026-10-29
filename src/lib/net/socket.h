@@ -38,6 +38,9 @@ tor_socket_t tor_accept_socket_with_extensions(tor_socket_t sockfd,
                                                struct sockaddr *addr,
                                                socklen_t *len,
                                                int cloexec, int nonblock);
+tor_socket_t tor_accept_socket_nonblocking_unlimited(tor_socket_t sockfd,
+                                                     struct sockaddr *addr,
+                                                     socklen_t *len);
 MOCK_DECL(tor_socket_t, tor_connect_socket,(tor_socket_t socket,
                                             const struct sockaddr *address,
                                             socklen_t address_len));

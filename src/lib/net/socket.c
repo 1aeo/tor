@@ -372,16 +372,18 @@ tor_accept_socket_nonblocking(tor_socket_t sockfd, struct sockaddr *addr,
 /** As accept(), but counts the number of open sockets and handles
  * socket creation with either of SOCK_CLOEXEC and SOCK_NONBLOCK specified.
  * <b>cloexec</b> and <b>nonblock</b> should be either 0 or 1 to indicate
- * if the corresponding extension should be used.*/
-tor_socket_t
-tor_accept_socket_with_extensions(tor_socket_t sockfd, struct sockaddr *addr,
-                                 socklen_t *len, int cloexec, int nonblock)
+ * if the corresponding extension should be used. If <b>check_limit</b> is
+ * true, fail with EMFILE once we have max_sockets - 1 open sockets. */
+static tor_socket_t
+tor_accept_socket_impl(tor_socket_t sockfd, struct sockaddr *addr,
+                       socklen_t *len, int cloexec, int nonblock,
+                       int check_limit)
 {
   tor_socket_t s;
 
   /* We are about to create a new file descriptor so make sure we have
    * enough of them. */
-  if (get_n_open_sockets() >= max_sockets - 1) {
+  if (check_limit && get_n_open_sockets() >= max_sockets - 1) {
 #ifdef _WIN32
     WSASetLastError(WSAEMFILE);
 #else
@@ -433,6 +435,23 @@ tor_accept_socket_with_extensions(tor_socket_t sockfd, struct sockaddr *addr,
  socket_ok:
   tor_take_socket_ownership(s);
   return s;
+}
+
+/** As tor_accept_socket_impl(), enforcing the max_sockets limit. */
+tor_socket_t
+tor_accept_socket_with_extensions(tor_socket_t sockfd, struct sockaddr *addr,
+                                 socklen_t *len, int cloexec, int nonblock)
+{
+  return tor_accept_socket_impl(sockfd, addr, len, cloexec, nonblock, 1);
+}
+
+/** As tor_accept_socket_nonblocking(), but accept past max_sockets - 1 using
+ * ULIMIT_BUFFER headroom. Only for callers holding a bounded socket count. */
+tor_socket_t
+tor_accept_socket_nonblocking_unlimited(tor_socket_t sockfd,
+                                        struct sockaddr *addr, socklen_t *len)
+{
+  return tor_accept_socket_impl(sockfd, addr, len, 1, 1, 0);
 }
 
 /** Return the number of sockets we currently have opened. */
