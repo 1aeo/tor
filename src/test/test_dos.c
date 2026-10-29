@@ -4,28 +4,42 @@
 #define DOS_PRIVATE
 #define CHANNEL_OBJECT_PRIVATE
 #define CIRCUITLIST_PRIVATE
+#define CONNECTION_PRIVATE
 
 #include "core/or/or.h"
 #include "app/config/config.h"
+#include "core/mainloop/connection.h"
+#include "core/mainloop/mainloop.h"
 #include "core/or/dos.h"
 #include "core/or/circuitlist.h"
+#include "core/or/connection_edge.h"
+#include "core/or/relay.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/time/compat_time.h"
 #include "feature/stats/geoip_stats.h"
 #include "core/or/channel.h"
+#include "core/or/command.h"
+#include "feature/dircommon/directory.h"
+#include "feature/stats/rephist.h"
 #include "feature/nodelist/microdesc.h"
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/nodelist.h"
 #include "feature/nodelist/routerlist.h"
+#include "feature/hibernate/hibernate.h"
 #include "feature/stats/bwhist.h"
 
 #include "feature/nodelist/networkstatus_st.h"
 #include "core/or/or_circuit_st.h"
 #include "app/config/or_options_st.h"
 #include "core/or/dos_options_st.h"
+#include "core/or/edge_connection_st.h"
 #include "core/or/or_connection_st.h"
 #include "feature/nodelist/routerstatus_st.h"
 
+#include "core/or/cell_st.h"
+#include "feature/dircommon/dir_connection_st.h"
+
+#include "test/fakechans.h"
 #include "test/test.h"
 #include "test/log_test_helpers.h"
 #include "test/opts_test_helpers.h"
@@ -449,6 +463,7 @@ test_known_relay(void *arg)
 {
   clientmap_entry_t *entry = NULL;
   routerstatus_t *rs = NULL;
+  channel_t *chan = tor_malloc_zero(sizeof(channel_t));
 
   (void) arg;
 
@@ -501,7 +516,16 @@ test_known_relay(void *arg)
   /* We should have a count of 5. */
   tt_uint_op(entry->dos_stats.conn_stats.concurrent_count, OP_EQ, 5);
 
+  /* A channel's previous hop is a known relay only if we know its identity,
+   * and a client if it never authenticated, whatever its identity. */
+  tt_int_op(channel_get_prev_hop(chan), OP_EQ, CHANNEL_PREV_HOP_UNKNOWN_RELAY);
+  memcpy(chan->identity_digest, rs->identity_digest, DIGEST_LEN);
+  tt_int_op(channel_get_prev_hop(chan), OP_EQ, CHANNEL_PREV_HOP_KNOWN_RELAY);
+  chan->is_client = 1;
+  tt_int_op(channel_get_prev_hop(chan), OP_EQ, CHANNEL_PREV_HOP_CLIENT);
+
  done:
+  tor_free(chan);
   routerstatus_free(rs);
   smartlist_clear(dummy_ns->routerstatus_list);
   networkstatus_vote_free(dummy_ns);
@@ -645,6 +669,166 @@ test_dos_refuse_single_hop(void *arg)
   if (dummy_ns)
     smartlist_free(dummy_ns->net_params);
   tor_free(dummy_ns);
+}
+
+static int n_connected = 0, n_end = 0, end_reason = 0;
+static int
+mock_relay_send_command_from_edge(streamid_t stream_id, circuit_t *circ,
+                                  uint8_t relay_command, const char *payload,
+                                  size_t payload_len,
+                                  crypt_path_t *cpath_layer,
+                                  const char *filename, int lineno)
+{
+  (void) stream_id;
+  (void) circ;
+  (void) cpath_layer;
+  (void) filename;
+  (void) lineno;
+  if (relay_command == RELAY_COMMAND_CONNECTED)
+    n_connected++;
+  if (relay_command == RELAY_COMMAND_END) {
+    n_end++;
+    end_reason = payload_len ? payload[0] : -1;
+  }
+  return 0;
+}
+
+static int hibernating = 0;
+static int
+mock_we_are_hibernating(void)
+{
+  return hibernating;
+}
+
+/** Test that every CREATE cell is counted by its previous hop, even one we
+ * drop, and that the circuit it makes keeps that kind. */
+static void
+test_dos_create_cell_prev_hop(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  cell_t cell;
+  const smartlist_t *circs = circuit_get_global_list();
+  const channel_prev_hop_t hop = CHANNEL_PREV_HOP_UNKNOWN_RELAY;
+  (void) arg;
+
+  MOCK(we_are_hibernating, mock_we_are_hibernating);
+  get_options_mutable()->ORPort_set = 1;
+  chan->circ_id_type = CIRC_ID_TYPE_NEITHER;
+  memset(&cell, 0, sizeof(cell));
+  cell.command = CELL_CREATE2;
+
+  /* Dropped: circuit ID 0. */
+  command_process_cell(chan, &cell);
+  tt_u64_op(rep_hist_get_create_cells()[hop], OP_EQ, 1);
+  tt_int_op(smartlist_len(circs), OP_EQ, 0);
+  /* An unknown handshake type makes a circuit, which we close. */
+  cell.circ_id = 1;
+  set_uint16(cell.payload, htons(0xffff));
+  command_process_cell(chan, &cell);
+  tt_u64_op(rep_hist_get_create_cells()[hop], OP_EQ, 2);
+  tt_int_op(smartlist_len(circs), OP_EQ, 1);
+  tt_int_op(TO_OR_CIRCUIT(smartlist_get(circs, 0))->prev_hop, OP_EQ, hop);
+  chan->is_client = 1;
+  cell.circ_id = 2;
+  command_process_cell(chan, &cell);
+  tt_u64_op(rep_hist_get_create_cells()[CHANNEL_PREV_HOP_CLIENT], OP_EQ, 1);
+  tt_int_op(smartlist_len(circs), OP_EQ, 2);
+  tt_int_op(TO_OR_CIRCUIT(smartlist_get(circs, 1))->prev_hop, OP_EQ,
+            CHANNEL_PREV_HOP_CLIENT);
+
+ done:
+  UNMOCK(we_are_hibernating);
+  circuit_free_all();
+  free_fake_channel(chan);
+}
+
+/** Test that connection_exit_begin_conn() counts every BEGIN_DIR cell by its
+ * place on its circuit, also those that tor refuses, and that the directory
+ * connections it opens know the circuit's previous hop. */
+static void
+test_dos_begindir_refused(void *arg)
+{
+  or_circuit_t *circ = NULL;
+  dos_options_t *dos_opts = get_dos_options(get_options_mutable());
+  relay_msg_t msg;
+  const channel_prev_hop_t hop = CHANNEL_PREV_HOP_UNKNOWN_RELAY;
+  (void) arg;
+
+  tor_init_connection_lists();
+  MOCK(relay_send_command_from_edge_, mock_relay_send_command_from_edge);
+  MOCK(we_are_hibernating, mock_we_are_hibernating);
+  get_options_mutable()->ORPort_set = 1;
+  get_options_mutable()->DirPort_set = 1;
+  get_options_mutable()->DirCache = 1;
+  /* The BEGIN_DIR rate limit lets a new circuit open two streams, and
+   * refuses the third. Time doesn't pass. */
+  monotime_enable_test_mocking();
+  monotime_coarse_set_mock_time_nsec(BILLION);
+  dos_opts->DoSBeginDirRateEnabled = 1;
+  dos_opts->DoSBeginDirRate = 1;
+  dos_opts->DoSBeginDirBurst = 2;
+  dos_opts->DoSBeginDirDefenseType = DOS_STREAM_DEFENSE_REFUSE_STREAM;
+  dos_init();
+  circ = or_circuit_new(0, NULL);
+  circ->prev_hop = hop;
+  TO_CIRCUIT(circ)->purpose = CIRCUIT_PURPOSE_OR;
+  memset(&msg, 0, sizeof(msg));
+  msg.command = RELAY_COMMAND_BEGIN_DIR;
+  msg.body = (const uint8_t *) "";
+
+  for (msg.stream_id = 1; msg.stream_id <= 3; msg.stream_id++)
+    tt_int_op(connection_exit_begin_conn(&msg, TO_CIRCUIT(circ)), OP_EQ, 0);
+  tt_int_op(n_connected, OP_EQ, 2);
+  tt_int_op(n_end, OP_EQ, 1);
+  tt_int_op(end_reason, OP_EQ, END_STREAM_REASON_MISC);
+  tt_u64_op(dos_get_num_begindir_rate_rejected(), OP_EQ, 1);
+  /* Two linked pairs, whose directory connections know the previous hop. */
+  tt_int_op(smartlist_len(get_connection_array()), OP_EQ, 4);
+  SMARTLIST_FOREACH(get_connection_array(), connection_t *, c, {
+    if (c->type == CONN_TYPE_DIR)
+      tt_int_op(TO_DIR_CONN(c)->prev_hop, OP_EQ, hop);
+  });
+  /* Every cell is counted, the refused one too. */
+  tt_u64_op(rep_hist_get_begindir_cells(hop)[NTH_BAND_1], OP_EQ, 1);
+  tt_u64_op(rep_hist_get_begindir_cells(hop)[NTH_BAND_2_10], OP_EQ, 2);
+
+  /* So are cells that tor refuses when we're not a directory cache, and
+   * when we're hibernating, which it checks after the BEGIN_DIR limits. */
+  get_options_mutable()->DirPort_set = 0;
+  get_options_mutable()->DirCache = 0;
+  tt_int_op(connection_exit_begin_conn(&msg, TO_CIRCUIT(circ)), OP_EQ, 0);
+  tt_int_op(end_reason, OP_EQ, END_STREAM_REASON_NOTDIRECTORY);
+  get_options_mutable()->DirPort_set = 1;
+  get_options_mutable()->DirCache = 1;
+  dos_opts->DoSBeginDirRateEnabled = 0;
+  dos_init();
+  hibernating = 1;
+  msg.stream_id++;
+  tt_int_op(connection_exit_begin_conn(&msg, TO_CIRCUIT(circ)), OP_EQ, 0);
+  tt_int_op(end_reason, OP_EQ, END_STREAM_REASON_HIBERNATING);
+  hibernating = 0;
+  tt_u64_op(rep_hist_get_begindir_cells(hop)[NTH_BAND_2_10], OP_EQ, 4);
+  tt_int_op(n_connected, OP_EQ, 2);
+
+ done:
+  UNMOCK(relay_send_command_from_edge_);
+  UNMOCK(we_are_hibernating);
+  monotime_disable_test_mocking();
+  SMARTLIST_FOREACH(get_connection_array(), connection_t *, c, {
+    if (c->type == CONN_TYPE_EXIT)
+      TO_EDGE_CONN(c)->on_circuit = NULL;
+  });
+  if (circ)
+    circ->n_streams = NULL;
+  while (smartlist_len(get_connection_array())) {
+    connection_t *c = smartlist_get(get_connection_array(), 0);
+    /* Take c off the active linked list before we free it. */
+    if (c->linked)
+      connection_stop_reading_from_linked_conn(c);
+    connection_remove(c);
+    connection_free_(c);
+  }
+  circuit_free_all();
 }
 
 /** Test that the heartbeat shows the directory request counts of each
@@ -1019,6 +1203,9 @@ struct testcase_t dos_tests[] = {
   { "conn_rate", test_dos_conn_rate, TT_FORK, NULL, NULL },
   { "begindir_limit", test_dos_begindir_limit, TT_FORK, NULL, NULL },
   { "refuse_single_hop", test_dos_refuse_single_hop, TT_FORK, NULL, NULL },
+  { "begindir_refused", test_dos_begindir_refused, TT_FORK, NULL, NULL },
+  { "create_cell_prev_hop", test_dos_create_cell_prev_hop, TT_FORK,
+    NULL, NULL },
   { "dir_heartbeat", test_dos_dir_heartbeat, TT_FORK, NULL, NULL },
   { "hsdir_fetch_shedding", test_dos_hsdir_fetch_shedding, TT_FORK,
     NULL, NULL },

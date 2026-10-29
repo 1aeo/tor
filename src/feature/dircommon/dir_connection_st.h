@@ -31,6 +31,9 @@ struct dir_connection_t {
   /** Is this dirconn direct, or via a multi-hop Tor circuit?
    * Direct connections can use the DirPort, or BEGINDIR over the ORPort. */
   unsigned int dirconn_direct:1;
+  /** For a tunneled (BEGIN_DIR) server connection: how the previous hop of
+   * its circuit identified itself, a channel_prev_hop_t. */
+  unsigned int prev_hop:2;
   /** For a tunneled (BEGIN_DIR) server connection: 0 until its request is
    * counted, then one more than its dir_request_type_t. */
   unsigned int request_type:4;

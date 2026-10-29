@@ -244,6 +244,8 @@ command_process_create_cell(cell_t *cell, channel_t *chan)
    * DoS mitigation subsystem layer of this event. Validation is done by this
    * function. */
   dos_cc_new_create_cell(chan);
+  const channel_prev_hop_t prev_hop = channel_get_prev_hop(chan);
+  rep_hist_note_create_cell(prev_hop);
 
   /* We check for the conditions that would make us drop the cell before
    * we check for the conditions that would make us send a DESTROY back,
@@ -320,6 +322,7 @@ command_process_create_cell(cell_t *cell, channel_t *chan)
   }
 
   circ = or_circuit_new(cell->circ_id, chan);
+  circ->prev_hop = prev_hop;
   circ->base_.purpose = CIRCUIT_PURPOSE_OR;
   circuit_set_state(TO_CIRCUIT(circ), CIRCUIT_STATE_ONIONSKIN_PENDING);
   create_cell = tor_malloc_zero(sizeof(create_cell_t));

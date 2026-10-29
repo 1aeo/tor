@@ -67,12 +67,16 @@ typedef enum {
   RELAY_METRICS_NUM_HSDIR_GET,
   /** Onion service descriptor uploads, by outcome. */
   RELAY_METRICS_NUM_HSDIR_POST,
-  /** Tunneled directory requests, by type. */
+  /** Tunneled directory requests, by type and previous hop. */
   RELAY_METRICS_NUM_BEGINDIR_REQUESTS,
   /** Tunneled directory responses handed to their stream, by type. */
   RELAY_METRICS_NUM_BEGINDIR_RESPONSES,
   /** Open tunneled directory server connections, by state. */
   RELAY_METRICS_BEGINDIR_CONNS,
+  /** CREATE cells, by previous hop. */
+  RELAY_METRICS_NUM_CREATE_CELLS,
+  /** BEGIN_DIR cells, by previous hop and place on their circuit. */
+  RELAY_METRICS_NUM_BEGINDIR_CELLS,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */

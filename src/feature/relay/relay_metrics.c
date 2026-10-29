@@ -76,6 +76,8 @@ static void fill_hsdir_post_values(void);
 static void fill_begindir_request_values(void);
 static void fill_begindir_response_values(void);
 static void fill_begindir_conns_values(void);
+static void fill_create_cell_values(void);
+static void fill_begindir_cell_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -285,6 +287,20 @@ static const relay_metrics_entry_t base_metrics[] =
     .name = METRICS_NAME(relay_begindir_connections),
     .help = "Open tunneled directory streams, by state",
     .fill_fn = fill_begindir_conns_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_CREATE_CELLS,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_create_cell_total),
+    .help = "Total number of CREATE cells we received",
+    .fill_fn = fill_create_cell_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_BEGINDIR_CELLS,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_begindir_cell_total),
+    .help = "Total number of BEGIN_DIR cells we received",
+    .fill_fn = fill_begindir_cell_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1337,8 +1353,25 @@ fill_hsdir_post_values(void)
                       HSDIR_POST_ACTION_COUNT);
 }
 
-/** Tunneled directory requests, by type. */
-static uint64_t dir_requests[DIR_REQUEST_TYPE_COUNT];
+/** Label values for an nth_band_t. */
+static const char *const nth_band_names[] = {
+  [NTH_BAND_1] = "1",
+  [NTH_BAND_2_10] = "2_10",
+  [NTH_BAND_11_100] = "11_100",
+  [NTH_BAND_101_1000] = "101_1000",
+  [NTH_BAND_1001_PLUS] = "1001_plus",
+};
+
+/** Label values for a channel_prev_hop_t. */
+static const char *const prev_hop_names[] = {
+  [CHANNEL_PREV_HOP_CLIENT] = "client",
+  [CHANNEL_PREV_HOP_KNOWN_RELAY] = "known_relay",
+  [CHANNEL_PREV_HOP_UNKNOWN_RELAY] = "unknown_relay",
+};
+
+/** Tunneled directory requests, by type and by the previous hop of their
+ * circuit. */
+static uint64_t dir_requests[DIR_REQUEST_TYPE_COUNT][CHANNEL_PREV_HOP_COUNT];
 /** Label values for a dir_request_type_t. */
 static const char *const dir_request_names[] = {
   [DIR_REQUEST_HS_GET] = "hs_get",
@@ -1365,16 +1398,37 @@ relay_note_dir_request(dir_connection_t *conn, dir_request_type_t type)
   if (!TO_CONN(conn)->linked || conn->request_type)
     return;
   conn->request_type = type + 1;
-  dir_requests[type]++;
+  dir_requests[type][conn->prev_hop]++;
 }
 
 /** Fill function for the RELAY_METRICS_NUM_BEGINDIR_REQUESTS metric. */
 static void
 fill_begindir_request_values(void)
 {
-  fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_BEGINDIR_REQUESTS],
-                      NULL, NULL, "type", dir_request_names, dir_requests,
-                      DIR_REQUEST_TYPE_COUNT);
+  for (int t = 0; t < DIR_REQUEST_TYPE_COUNT; t++)
+    fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_BEGINDIR_REQUESTS],
+                        "type", dir_request_names[t], "prev_hop",
+                        prev_hop_names, dir_requests[t],
+                        CHANNEL_PREV_HOP_COUNT);
+}
+
+/** Fill function for the RELAY_METRICS_NUM_CREATE_CELLS metric. */
+static void
+fill_create_cell_values(void)
+{
+  fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_CREATE_CELLS], NULL,
+                      NULL, "prev_hop", prev_hop_names,
+                      rep_hist_get_create_cells(), CHANNEL_PREV_HOP_COUNT);
+}
+
+/** Fill function for the RELAY_METRICS_NUM_BEGINDIR_CELLS metric. */
+static void
+fill_begindir_cell_values(void)
+{
+  for (int p = 0; p < CHANNEL_PREV_HOP_COUNT; p++)
+    fill_labeled_values(&base_metrics[RELAY_METRICS_NUM_BEGINDIR_CELLS],
+                        "prev_hop", prev_hop_names[p], "nth", nth_band_names,
+                        rep_hist_get_begindir_cells(p), NTH_BAND_COUNT);
 }
 
 /** Tunneled directory responses fully handed to their stream (which doesn't

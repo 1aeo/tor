@@ -80,6 +80,9 @@ struct or_circuit_t {
    * the previous hop authenticated; closing its stream must not clear this
    * flag. */
   unsigned int already_received_begindir : 1;
+  /** How the previous hop identified itself when the circuit was created: a
+   * channel_prev_hop_t. */
+  unsigned int prev_hop : 2;
 
   /** If set, this circuit carries HS traffic. Consider it in any HS
    *  statistics. */
@@ -112,6 +115,9 @@ struct or_circuit_t {
    * ESTABLISH_INTRO cell extension. If unset, the consensus is used to learn
    * if the defenses can be enabled or not. */
   unsigned int introduce2_dos_defense_explicit : 1;
+  /** Number of BEGIN_DIR cells received on this circuit, stopping at
+   * NTH_BAND_MAX. */
+  unsigned int n_begindir : 10;
 
   /** INTRODUCE2 cell bucket controlling how much can go on this circuit. Only
    * used if this is a service introduction circuit at the intro point
