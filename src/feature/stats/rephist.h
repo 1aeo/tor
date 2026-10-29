@@ -49,6 +49,46 @@ uint64_t rep_hist_get_conn_rejected(unsigned int type, int af);
 void rep_hist_note_exit_stream(unsigned int cmd);
 uint64_t rep_hist_get_exit_stream_seen(unsigned int cmd);
 
+/** Where the nth of something falls among those of its kind: the BEGIN_DIR
+ * cells of its circuit, or the cells of its source or the fetches of its
+ * descriptor in the same minute. */
+typedef enum nth_band_t {
+  /** The first. */
+  NTH_BAND_1,
+  /** The 2nd to the 10th. */
+  NTH_BAND_2_10,
+  /** The 11th to the 100th. */
+  NTH_BAND_11_100,
+  /** The 101st to the 1000th. */
+  NTH_BAND_101_1000,
+  /** The 1001st or later. */
+  NTH_BAND_1001_PLUS,
+
+  NTH_BAND_COUNT
+} nth_band_t;
+/** Counts for nth_band_of() may stop here, where the last band starts. */
+#define NTH_BAND_MAX 1001
+
+/** Return the band of the <b>n</b>th of something. */
+static inline nth_band_t
+nth_band_of(uint32_t n)
+{
+  if (n <= 1)
+    return NTH_BAND_1;
+  if (n <= 10)
+    return NTH_BAND_2_10;
+  if (n <= 100)
+    return NTH_BAND_11_100;
+  if (n < NTH_BAND_MAX)
+    return NTH_BAND_101_1000;
+  return NTH_BAND_1001_PLUS;
+}
+
+void rep_hist_note_create_cell(channel_prev_hop_t prev_hop);
+void rep_hist_note_begindir_cell(or_circuit_t *circ);
+const uint64_t *rep_hist_get_create_cells(void);
+const uint64_t *rep_hist_get_begindir_cells(channel_prev_hop_t prev_hop);
+
 void rep_hist_buffer_stats_init(time_t now);
 void rep_hist_buffer_stats_add_circ(circuit_t *circ,
                                     time_t end_of_interval);

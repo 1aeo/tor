@@ -441,6 +441,15 @@ typedef enum {
   CIRCUIT_P_CHAN = 1
 } circuit_channel_direction_t;
 
+/** How a channel's peer identified itself: see channel_get_prev_hop(). */
+typedef enum channel_prev_hop_t {
+  CHANNEL_PREV_HOP_CLIENT, /**< Never authenticated. */
+  CHANNEL_PREV_HOP_KNOWN_RELAY, /**< A relay we know. */
+  CHANNEL_PREV_HOP_UNKNOWN_RELAY, /**< An identity we don't know. */
+
+  CHANNEL_PREV_HOP_COUNT
+} channel_prev_hop_t;
+
 /** Initial value for both sides of a circuit transmission window when the
  * circuit is initialized.  Measured in cells. */
 #define CIRCWINDOW_START 1000

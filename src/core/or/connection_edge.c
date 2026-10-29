@@ -4237,6 +4237,7 @@ connection_exit_begin_conn(const relay_msg_t *msg, circuit_t *circ)
       }
     }
   } else if (msg->command == RELAY_COMMAND_BEGIN_DIR) {
+    rep_hist_note_begindir_cell(or_circ);
     if (!directory_permits_begindir_requests(options) ||
         CIRCUIT_IS_CONFLUX(circ) || /* Cannot be used for dir streams */
         circ->purpose != CIRCUIT_PURPOSE_OR) {
@@ -4728,6 +4729,7 @@ connection_exit_connect_dir(edge_connection_t *exitconn)
   dirconn->base_.type = CONN_TYPE_DIR;
   dirconn->base_.purpose = DIR_PURPOSE_SERVER;
   dirconn->base_.state = DIR_CONN_STATE_SERVER_COMMAND_WAIT;
+  dirconn->prev_hop = circ->prev_hop;
 
   /* Note that the new dir conn belongs to the same tunneled request as
    * the edge conn, so that we can measure download times. */

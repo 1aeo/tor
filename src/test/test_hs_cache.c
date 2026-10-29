@@ -31,6 +31,7 @@
 #include "core/or/channel.h"
 #include "core/or/dos.h"
 #include "feature/relay/relay_metrics.h"
+#include "feature/stats/rephist.h"
 #include "lib/metrics/metrics_store_entry.h"
 #include "lib/crypt_ops/crypto_format.h"
 #include "lib/crypt_ops/crypto_rand.h"
@@ -94,6 +95,14 @@ hsdir_request_on_circuit(or_circuit_t *circ, const char *headers,
   conn->base_.address = tor_strdup("127.0.0.1");
   connection_link_connections(TO_CONN(conn), TO_CONN(edge));
   edge->on_circuit = circ ? TO_CIRCUIT(circ) : NULL;
+  /* As command_process_create_cell(), connection_exit_begin_conn() and
+   * connection_exit_connect_dir(). */
+  if (circ) {
+    if (!circ->prev_hop)
+      circ->prev_hop = channel_get_prev_hop(circ->p_chan);
+    rep_hist_note_begindir_cell(circ);
+    conn->prev_hop = circ->prev_hop;
+  }
 
   if (body) {
     tt_int_op(directory_handle_command_post(conn, headers, body, strlen(body)),
@@ -547,19 +556,34 @@ helper_fetch_desc_from_hsdir(const ed25519_public_key_t *blinded_key)
   return received_desc;
 }
 
-/* Return the value of <b>name</b>{<b>key</b>="<b>value</b>"} in the relay
- * metrics store. If there is no such entry, fail the test and return -1. */
+/* Return the value of <b>name</b>{<b>key1</b>="<b>value1</b>",
+ * <b>key2</b>="<b>value2</b>"} in the relay metrics store. If there is no
+ * such entry, fail the test and return -1. */
 static int64_t
-get_metric(const char *name, const char *key, const char *value)
+get_metric2(const char *name, const char *key1, const char *value1,
+            const char *key2, const char *value2)
 {
   const smartlist_t *entries =
     metrics_store_get_all(smartlist_get(relay_metrics_get_stores(), 0), name);
-  const metrics_store_entry_t *entry =
-    metrics_store_find_entry_with_label(entries,
-                                        metrics_format_label(key, value));
-  if (!entry)
-    TT_FAIL(("no series %s{%s=\"%s\"}", name, key, value));
-  return entry ? metrics_store_entry_get_value(entry) : -1;
+  char *label1 = tor_strdup(metrics_format_label(key1, value1));
+  int64_t value = -1;
+
+  SMARTLIST_FOREACH_BEGIN(entries, const metrics_store_entry_t *, e) {
+    if (metrics_store_entry_has_label(e, label1) &&
+        metrics_store_entry_has_label(e, metrics_format_label(key2, value2)))
+      value = metrics_store_entry_get_value(e);
+  } SMARTLIST_FOREACH_END(e);
+  tor_free(label1);
+  if (value == -1)
+    TT_FAIL(("no series %s{%s=\"%s\",%s=\"%s\"}", name, key1, value1,
+             key2, value2));
+  return value;
+}
+/* As get_metric2(), for <b>name</b>{<b>key</b>="<b>value</b>"}. */
+static int64_t
+get_metric(const char *name, const char *key, const char *value)
+{
+  return get_metric2(name, key, value, key, value);
 }
 #define GET_METRIC(action) \
   get_metric(METRICS_NAME(relay_hsdir_fetch_total), "action", (action))
@@ -567,9 +591,53 @@ get_metric(const char *name, const char *key, const char *value)
   get_metric(METRICS_NAME(relay_hsdir_upload_total), "action", (action))
 #define DOS_METRIC(type) \
   get_metric(METRICS_NAME(relay_dos_total), "type", (type))
-/* tor_relay_begindir_request_total{type} */
+/* tor_relay_begindir_request_total{type, prev_hop}, and its sum over the
+ * three kinds of previous hop. */
+#define REQ_METRIC(type, hop) \
+  get_metric2(METRICS_NAME(relay_begindir_request_total), "type", (type), \
+              "prev_hop", (hop))
 #define REQ_SUM(type) \
-  get_metric(METRICS_NAME(relay_begindir_request_total), "type", (type))
+  (REQ_METRIC((type), "client") + REQ_METRIC((type), "known_relay") + \
+   REQ_METRIC((type), "unknown_relay"))
+
+/* Return the relay metrics store as it is exported. The caller frees it. */
+static char *
+relay_metrics_output(void)
+{
+  buf_t *buf = buf_new();
+  char *out;
+
+  metrics_store_get_output(METRICS_FORMAT_PROMETHEUS,
+                           smartlist_get(relay_metrics_get_stores(), 0), buf);
+  out = buf_extract(buf, NULL);
+  buf_free(buf);
+  return out;
+}
+
+/* Return true iff the exported relay metrics contain <b>text</b>. */
+static bool
+relay_metrics_export(const char *text)
+{
+  char *out = relay_metrics_output();
+  const bool found = strstr(out, text) != NULL;
+
+  tor_free(out);
+  return found;
+}
+
+/* Return true iff the relay metrics store exports <b>name</b> as a
+ * <b>type</b>. */
+static bool
+metric_has_type(const char *name, const char *type)
+{
+  char *type_line = NULL;
+  bool found;
+
+  tor_asprintf(&type_line, "# TYPE %s %s\n", name, type);
+  found = relay_metrics_export(type_line);
+  tor_free(type_line);
+  return found;
+}
 
 /* Return a new OR circuit whose previous hop is <b>chan</b>. */
 static or_circuit_t *
@@ -642,13 +710,16 @@ test_hsdir_get_post_metrics(void *arg)
   directory_handle_command_post(dirport, post, desc_str, strlen(desc_str));
   connection_free_minimal(TO_CONN(dirport));
 
-  /* Exactly one request of each outcome, each also counted by type. */
+  /* Exactly one request of each outcome, each also counted by type, and
+   * single_hop exactly when the previous hop is a client. */
   for (size_t i = 0; i < ARRAY_LENGTH(get_actions); i++)
     tt_i64_op(GET_METRIC(get_actions[i]), OP_EQ, 1);
   for (size_t i = 0; i < ARRAY_LENGTH(post_actions); i++)
     tt_i64_op(POST_METRIC(post_actions[i]), OP_EQ, 1);
   tt_i64_op(REQ_SUM("hs_get"), OP_EQ, 4);
   tt_i64_op(REQ_SUM("hs_post"), OP_EQ, 6);
+  tt_i64_op(REQ_METRIC("hs_get", "client"), OP_EQ, 1);
+  tt_i64_op(REQ_METRIC("hs_post", "client"), OP_EQ, 1);
 
  done:
   UNMOCK(connection_write_to_buf_impl_);
@@ -1330,6 +1401,52 @@ test_dir_request_url_table_types(void *arg)
   free_fake_channel(chan);
 }
 
+/* Each new family is exported with its type and number of series (one per
+ * previous-hop class, and per nth or type), and with the counted values. */
+static void
+test_prev_hop_metric_series(void *arg)
+{
+  const struct {
+    const char *name;
+    int n_series;
+    const char *type;
+  } families[] = {
+    { METRICS_NAME(relay_hsdir_fetch_total), 4, "counter" },
+    { METRICS_NAME(relay_hsdir_upload_total), 6, "counter" },
+    { METRICS_NAME(relay_begindir_response_total), 2, "counter" },
+    { METRICS_NAME(relay_begindir_connections), 4, "gauge" },
+    { METRICS_NAME(relay_create_cell_total), 3, "counter" },
+    { METRICS_NAME(relay_begindir_cell_total), 15, "counter" },
+    { METRICS_NAME(relay_begindir_request_total), 30, "counter" },
+  };
+  or_circuit_t *circ = or_circuit_new(0, NULL);
+  (void) arg;
+
+  rep_hist_note_create_cell(CHANNEL_PREV_HOP_KNOWN_RELAY);
+  rep_hist_note_create_cell(CHANNEL_PREV_HOP_KNOWN_RELAY);
+  for (int i = 0; i < 11; i++)
+    rep_hist_note_begindir_cell(circ);
+
+  tt_i64_op(get_metric(METRICS_NAME(relay_create_cell_total), "prev_hop",
+                       "known_relay"), OP_EQ, 2);
+  tt_i64_op(get_metric2(METRICS_NAME(relay_begindir_cell_total), "prev_hop",
+                        "client", "nth", "1"), OP_EQ, 1);
+  tt_i64_op(get_metric2(METRICS_NAME(relay_begindir_cell_total), "prev_hop",
+                        "client", "nth", "2_10"), OP_EQ, 9);
+  tt_i64_op(get_metric2(METRICS_NAME(relay_begindir_cell_total), "prev_hop",
+                        "client", "nth", "11_100"), OP_EQ, 1);
+  for (size_t i = 0; i < ARRAY_LENGTH(families); i++) {
+    const smartlist_t *entries = metrics_store_get_all(
+               smartlist_get(relay_metrics_get_stores(), 0), families[i].name);
+    tt_assert(entries);
+    tt_int_op(smartlist_len(entries), OP_EQ, families[i].n_series);
+    tt_assert(metric_has_type(families[i].name, families[i].type));
+  }
+
+ done:
+  circuit_free_all();
+}
+
 #define DIR_CONN_GAUGE(state) \
   get_metric(METRICS_NAME(relay_begindir_connections), "state", (state))
 
@@ -1683,6 +1800,48 @@ test_hsdir_desc_fetch_shedding(void *arg)
   tor_free(get_b);
 }
 
+/* BEGIN_DIR cells are exported by their previous hop and in every band of
+ * their place on their circuit, the 1001st and later included. */
+static void
+test_begindir_cell_bands(void *arg)
+{
+  or_circuit_t *circ = or_circuit_new(0, NULL);
+  const char *bands[] = { "1", "2_10", "11_100", "101_1000", "1001_plus" };
+  const int64_t want[] = { 1, 9, 90, 900, 2 };
+  (void) arg;
+
+  circ->prev_hop = CHANNEL_PREV_HOP_KNOWN_RELAY;
+  for (int i = 0; i < 1002; i++)
+    rep_hist_note_begindir_cell(circ);
+  rep_hist_note_begindir_cell(NULL); /* A circuit we made: not counted. */
+  for (size_t i = 0; i < ARRAY_LENGTH(bands); i++)
+    tt_i64_op(get_metric2(METRICS_NAME(relay_begindir_cell_total), "prev_hop",
+                          "known_relay", "nth", bands[i]), OP_EQ, want[i]);
+  tt_int_op(circ->n_begindir, OP_EQ, NTH_BAND_MAX);
+
+ done:
+  circuit_free_all();
+}
+
+/* A family with no first label exports each series with its one label. */
+#define EXPORTS_SERIES(name, label) \
+  relay_metrics_export("\n" METRICS_NAME(name) "{" label "} ")
+static void
+test_metric_single_labels(void *arg)
+{
+  (void) arg;
+
+  tt_assert(EXPORTS_SERIES(relay_create_cell_total, "prev_hop=\"client\""));
+  tt_assert(EXPORTS_SERIES(relay_hsdir_fetch_total, "action=\"success\""));
+  tt_assert(EXPORTS_SERIES(relay_hsdir_upload_total, "action=\"success\""));
+  tt_assert(EXPORTS_SERIES(relay_begindir_response_total, "type=\"other\""));
+  tt_assert(EXPORTS_SERIES(relay_begindir_connections,
+                           "state=\"command_wait\""));
+
+ done:
+  ;
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -1702,6 +1861,8 @@ struct testcase_t hs_cache[] = {
   { "upload_and_download_hs_desc", test_upload_and_download_hs_desc, TT_FORK,
     NULL, NULL },
   { "hsdir_get_post_metrics", test_hsdir_get_post_metrics, TT_FORK,
+    NULL, NULL },
+  { "prev_hop_metric_series", test_prev_hop_metric_series, TT_FORK,
     NULL, NULL },
   { "dir_request_response_metrics", test_dir_request_response_metrics,
     TT_FORK, NULL, NULL },
@@ -1725,6 +1886,8 @@ struct testcase_t hs_cache[] = {
     NULL, NULL },
   { "client_cache_remove", test_client_cache_remove, TT_FORK,
     NULL, NULL },
+  { "begindir_cell_bands", test_begindir_cell_bands, TT_FORK, NULL, NULL },
+  { "metric_single_labels", test_metric_single_labels, TT_FORK, NULL, NULL },
 
   END_OF_TESTCASES
 };

@@ -2992,6 +2992,24 @@ channel_is_client(const channel_t *chan)
 }
 
 /**
+ * Return how the peer of <b>chan</b>, the previous hop of the circuits it
+ * extends to us, identified itself: as a client (it never authenticated: a
+ * tor client or a bridge), as a relay we know (in our consensus, or whose
+ * descriptor we have), or with an identity we don't know (a relay newer than
+ * our consensus, or one that doesn't publish a descriptor). This is not a
+ * hop count: a relay also makes one-hop circuits for itself.
+ */
+channel_prev_hop_t
+channel_get_prev_hop(const channel_t *chan)
+{
+  if (channel_is_client(chan))
+    return CHANNEL_PREV_HOP_CLIENT;
+  if (connection_or_digest_is_known_relay(chan->identity_digest))
+    return CHANNEL_PREV_HOP_KNOWN_RELAY;
+  return CHANNEL_PREV_HOP_UNKNOWN_RELAY;
+}
+
+/**
  * Set the client flag.
  *
  * Mark a channel as being from a client.

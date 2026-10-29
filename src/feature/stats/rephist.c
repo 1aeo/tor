@@ -78,6 +78,7 @@
 #include "feature/stats/predict_ports.h"
 #include "feature/stats/connstats.h"
 #include "feature/stats/rephist.h"
+#include "lib/cc/ctassert.h"
 #include "lib/container/order.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/math/laplace.h"
@@ -1671,6 +1672,56 @@ rep_hist_get_exit_stream_seen(unsigned int cmd)
   default:
     return 0;
   }
+}
+
+/*** CREATE and BEGIN_DIR cells by previous hop ***/
+
+/* Circuits and directory connections keep their previous hop in two bits,
+ * and circuits their count of BEGIN_DIR cells, which stops at NTH_BAND_MAX,
+ * in ten. */
+CTASSERT(CHANNEL_PREV_HOP_COUNT <= 4);
+CTASSERT(NTH_BAND_MAX < 1024);
+
+/** CREATE cells, by how their previous hop identified itself. */
+static uint64_t create_cells[CHANNEL_PREV_HOP_COUNT];
+/** BEGIN_DIR cells, by previous hop and by place among those of their
+ * circuit. */
+static uint64_t begindir_cells[CHANNEL_PREV_HOP_COUNT][NTH_BAND_COUNT];
+
+/** Note a CREATE cell from a previous hop of kind <b>prev_hop</b>, before we
+ * decide whether to accept it. */
+void
+rep_hist_note_create_cell(channel_prev_hop_t prev_hop)
+{
+  create_cells[prev_hop]++;
+}
+
+/** Note a BEGIN_DIR cell on <b>circ</b>, before we decide whether to accept
+ * it. A NULL <b>circ</b> (one we originated) isn't counted. */
+void
+rep_hist_note_begindir_cell(or_circuit_t *circ)
+{
+  if (!circ)
+    return;
+  if (circ->n_begindir < NTH_BAND_MAX)
+    circ->n_begindir++;
+  begindir_cells[circ->prev_hop][nth_band_of(circ->n_begindir)]++;
+}
+
+/** Return the numbers of CREATE cells, indexed by the channel_prev_hop_t of
+ * their previous hop. */
+const uint64_t *
+rep_hist_get_create_cells(void)
+{
+  return create_cells;
+}
+
+/** Return the numbers of BEGIN_DIR cells from previous hops of kind
+ * <b>prev_hop</b>, indexed by their nth_band_t on their circuit. */
+const uint64_t *
+rep_hist_get_begindir_cells(channel_prev_hop_t prev_hop)
+{
+  return begindir_cells[prev_hop];
 }
 
 /******* Connections statistics *******/

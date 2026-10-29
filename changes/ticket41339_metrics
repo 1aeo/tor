@@ -20,3 +20,10 @@
       among those over an anonymous circuit, and the first on it. Stock clients
       and services use an unknown previous hop only while our consensus lags
       theirs. Part of ticket 41339.
+    - Count CREATE cells, as tor_relay_create_cell_total, BEGIN_DIR cells, as
+      tor_relay_begindir_cell_total, and tunneled directory requests, in
+      tor_relay_begindir_request_total, by how their circuit's previous hop
+      identified itself: "client" (it never authenticated: a tor client or a
+      bridge), "known_relay" or "unknown_relay". This is not a hop count. Count
+      BEGIN_DIR cells also by their place among their circuit's BEGIN_DIR cells
+      (nth). Part of ticket 41339.
