@@ -9,6 +9,7 @@
 #define CONFIG_PRIVATE
 #define CONNECTION_PRIVATE
 #define MAINLOOP_PRIVATE
+#define METRICS_PRIVATE
 #define METRICS_STORE_ENTRY_PRIVATE
 
 #include "test/test.h"
@@ -27,6 +28,7 @@
 
 #include "lib/encoding/confline.h"
 #include "lib/metrics/metrics_store.h"
+#include "lib/net/socket.h"
 
 #include <limits.h>
 
@@ -191,6 +193,104 @@ test_connection(void *arg)
  done:
   or_options_free(options);
   connection_free_minimal(conn);
+}
+
+/** Send <b>request</b> to 127.0.0.1:<b>port</b> and return the prefix of the
+ * reply up to EOF. */
+static char *
+worker_request(uint16_t port, const char *request)
+{
+  struct sockaddr_in sin = { .sin_family = AF_INET, .sin_port = htons(port),
+                             .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+  char reply[256] = "", drain[4096];
+  size_t len = 0;
+  ssize_t n;
+#ifdef _WIN32
+  const DWORD timeout = 10000;
+#else
+  const struct timeval timeout = { 10, 0 };
+#endif
+  /* Raw socket() so the test can lower max_sockets below n_sockets_open. */
+  tor_socket_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout,
+             sizeof(timeout));
+  tor_assert(connect(s, (struct sockaddr *)&sin, sizeof(sin)) == 0);
+  (void) tor_socket_send(s, request, strlen(request), 0);
+  while ((n = tor_socket_recv(s, drain, sizeof(drain), 0)) > 0) {
+    if (len < sizeof(reply) - 1) {
+      size_t copy = MIN((size_t)n, sizeof(reply) - 1 - len);
+      memcpy(reply + len, drain, copy);
+      len += copy;
+    }
+  }
+  tor_close_socket_simple(s);
+  return tor_strdup(reply);
+}
+
+static void
+test_worker(void *arg)
+{
+  struct sockaddr_in sin = { .sin_family = AF_INET,
+                             .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+  socklen_t sin_len = sizeof(sin);
+  char *reply = NULL, *big_req = NULL;
+  connection_t *conn = connection_new(CONN_TYPE_METRICS_LISTENER, AF_INET);
+  or_options_t *options = get_options_mutable();
+
+  (void) arg;
+
+  conn->s = tor_open_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  tt_int_op(bind(conn->s, (struct sockaddr *)&sin, sizeof(sin)), OP_EQ, 0);
+  tt_int_op(listen(conn->s, 8), OP_EQ, 0);
+  tt_int_op(getsockname(conn->s, (struct sockaddr *)&sin, &sin_len), OP_EQ, 0);
+  const uint16_t port = ntohs(sin.sin_port);
+
+  metrics_configure_listener(conn);
+  metrics_worker_refresh(NULL, NULL);
+
+  /* Policy permits only 1.2.3.4: 127.0.0.1 gets an immediate empty close. */
+  set_metrics_port(options);
+  reply = worker_request(port, "GET /metrics HTTP/1.0\r\n\r\n");
+  tt_str_op(reply, OP_EQ, "");
+  tor_free(reply);
+
+  config_free_lines(options->MetricsPortPolicy);
+  config_get_lines("MetricsPortPolicy accept 127.0.0.1",
+                   &options->MetricsPortPolicy, 0);
+  tt_int_op(policies_parse_from_options(options), OP_EQ, 0);
+  reply = worker_request(port, "GET /metrics HTTP/1.0\r\n\r\n");
+  tt_assert(!strcmpstart(reply, "HTTP/1.0 200 OK\r\n"));
+  tor_free(reply);
+
+  /* Still answered when open sockets reach max_sockets. */
+  const int orig_max = get_max_sockets();
+  set_max_sockets(get_n_open_sockets());
+  reply = worker_request(port, "GET /metrics HTTP/1.0\r\n\r\n");
+  set_max_sockets(orig_max);
+  tt_assert(!strcmpstart(reply, "HTTP/1.0 200 OK\r\n"));
+  tor_free(reply);
+
+  reply = worker_request(port, "GET /badpath HTTP/1.0\r\n\r\n");
+  tt_str_op(reply, OP_EQ, "HTTP/1.0 404 Not Found\r\n\r\n");
+  tor_free(reply);
+
+  reply = worker_request(port, "POST /metrics HTTP/1.0\r\n\r\n");
+  tt_str_op(reply, OP_EQ, "HTTP/1.0 405 Method Not Allowed\r\n\r\n");
+  tor_free(reply);
+
+  big_req = tor_malloc(1050);
+  memset(big_req, 'A', 1049);
+  big_req[1049] = '\0';
+  reply = worker_request(port, big_req);
+  tt_str_op(reply, OP_EQ, "HTTP/1.0 400 Bad Request\r\n\r\n");
+
+ done:
+  tor_free(big_req);
+  tor_free(reply);
+  connection_free_minimal(conn);
+  metrics_cleanup();
+  or_options_free(options);
 }
 
 static void
@@ -424,6 +524,7 @@ struct testcase_t metrics_tests[] = {
 
   { "config", test_config, TT_FORK, NULL, NULL },
   { "connection", test_connection, TT_FORK, NULL, NULL },
+  { "worker", test_worker, TT_FORK, NULL, NULL },
   { "prometheus", test_prometheus, TT_FORK, NULL, NULL },
   { "prometheus_histogram", test_prometheus_histogram, TT_FORK, NULL, NULL },
   { "store", test_store, TT_FORK, NULL, NULL },

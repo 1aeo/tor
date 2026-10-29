@@ -328,7 +328,13 @@ static int filter_nopar_gen[] = {
 #ifdef __NR_unlinkat
     SCMP_SYS(unlinkat),
 #endif
-    SCMP_SYS(poll)
+    SCMP_SYS(poll),
+#ifdef __NR_ppoll
+    SCMP_SYS(ppoll),
+#endif
+#ifdef __NR_ppoll_time64
+    SCMP_SYS(ppoll_time64),
+#endif
 };
 
 /* opendir is not a syscall but it will use either open or openat. We do not

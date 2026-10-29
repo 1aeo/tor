@@ -943,6 +943,7 @@ connection_free_minimal(connection_t *conn)
 
   if (SOCKET_OK(conn->s)) {
     log_debug(LD_NET,"closing fd %d.",(int)conn->s);
+    metrics_close_listener(conn);
     tor_close_socket(conn->s);
     conn->s = TOR_INVALID_SOCKET;
   }
@@ -1085,8 +1086,10 @@ connection_close_immediate(connection_t *conn)
   conn->read_blocked_on_bw = 0;
   conn->write_blocked_on_bw = 0;
 
-  if (SOCKET_OK(conn->s))
+  if (SOCKET_OK(conn->s)) {
+    metrics_close_listener(conn);
     tor_close_socket(conn->s);
+  }
   conn->s = TOR_INVALID_SOCKET;
   if (conn->linked)
     conn->linked_conn_is_closed = 1;
@@ -1781,7 +1784,9 @@ connection_listener_new(const struct sockaddr *listensockaddr,
          conn_type_to_string(type), gotPort);
 
   conn->state = LISTENER_STATE_READY;
-  if (start_reading) {
+  if (type == CONN_TYPE_METRICS_LISTENER) {
+    metrics_configure_listener(conn);
+  } else if (start_reading) {
     connection_start_reading(conn);
   } else {
     tor_assert(type == CONN_TYPE_AP_DNS_LISTENER);

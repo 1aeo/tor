@@ -1,0 +1,5 @@
+  o Minor features (metrics, relay):
+    - Answer MetricsPort requests from a dedicated thread, using a copy of
+      the metrics that the main thread refreshes every second, so that
+      scrapes still succeed when the main event loop is overloaded or tor
+      is at its socket limit. Closes ticket 41458.

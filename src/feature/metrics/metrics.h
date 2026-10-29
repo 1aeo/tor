@@ -29,9 +29,16 @@ buf_t *metrics_get_output(const metrics_format_t fmt);
 int metrics_connection_process_inbuf(struct connection_t *conn);
 int metrics_connection_reached_eof(struct connection_t *conn);
 int metrics_connection_finished_flushing(struct connection_t *conn);
+void metrics_configure_listener(struct connection_t *conn);
+void metrics_close_listener(const struct connection_t *conn);
 
 /* Configuration. */
 int metrics_parse_ports(or_options_t *options, smartlist_t *ports,
                         char **err_msg_out);
+
+#ifdef METRICS_PRIVATE
+struct mainloop_event_t;
+STATIC void metrics_worker_refresh(struct mainloop_event_t *ev, void *arg);
+#endif
 
 #endif /* !defined(TOR_FEATURE_METRICS_METRICS_H) */
