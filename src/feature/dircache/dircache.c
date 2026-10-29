@@ -15,8 +15,10 @@
 #include "app/config/config.h"
 #include "app/config/resolve_addr.h"
 #include "core/mainloop/connection.h"
+#include "core/or/channel.h"
 #include "core/or/circuitlist.h"
 #include "core/or/connection_edge.h"
+#include "core/or/connection_or.h"
 #include "core/or/dos.h"
 #include "core/or/relay.h"
 #include "feature/dirauth/dirvote.h"
@@ -1431,6 +1433,20 @@ hsdir_request_allowed_on_circuit(dir_connection_t *conn)
   return true;
 }
 
+/** Count the onion service directory request on <b>conn</b>, which
+ * connection_dir_is_anonymous() and hsdir_request_allowed_on_circuit()
+ * accepted, if its previous hop is not a known relay. Stock tor and Arti
+ * build those circuits through relays in the consensus. */
+static void
+note_hs_dir_request(dir_connection_t *conn)
+{
+  const or_circuit_t *circ =
+    TO_OR_CIRCUIT(TO_EDGE_CONN(TO_CONN(conn)->linked_conn)->on_circuit);
+
+  if (!connection_or_digest_is_known_relay(circ->p_chan->identity_digest))
+    dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
+}
+
 /** Helper function for GET `/tor/hs/3/...`. Only for version 3.
  */
 STATIC int
@@ -1459,6 +1475,7 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
     relay_increment_hsdir_get_action(HSDIR_GET_REFUSED);
     goto done;
   }
+  note_hs_dir_request(conn);
 
   /* After the path prefix follows the base64 encoded blinded pubkey which we
    * use to get the descriptor from the cache. Skip the prefix and get the
@@ -1722,6 +1739,7 @@ directory_handle_command_post,(dir_connection_t *conn, const char *headers,
       relay_increment_hsdir_post_action(HSDIR_POST_REFUSED);
       goto done;
     }
+    note_hs_dir_request(conn);
     const char *msg = "HS descriptor stored successfully.";
 
     /* We most probably have a publish request for an HS descriptor. */

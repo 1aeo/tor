@@ -15,3 +15,8 @@
     - Report the tunneled directory connections a relay has open, by state, as
       the gauge tor_relay_begindir_connections. These connections have no
       socket, so tor_relay_connections doesn't show them. Part of ticket 41339.
+    - Count the onion service directory requests whose previous hop is not a
+      known relay, as tor_relay_dos_total{type="hsdir_unknown_prev_hop"},
+      among those over an anonymous circuit, and the first on it. Stock clients
+      and services use an unknown previous hop only while our consensus lags
+      theirs. Part of ticket 41339.

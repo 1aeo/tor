@@ -465,6 +465,8 @@ fill_dos_values(void)
     { "begindir_rejected", dos_get_num_begindir_rejected() },
     { "begindir_rate_rejected", dos_get_num_begindir_rate_rejected() },
     { "begindir_hsdir_rejected", dos_get_num_begindir_hsdir_rejected() },
+    { "hsdir_unknown_prev_hop",
+      dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP) },
   };
 
   for (size_t i = 0; i < ARRAY_LENGTH(entries); i++) {

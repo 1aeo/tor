@@ -40,6 +40,7 @@
 #include "core/or/or_connection_st.h"
 #include "feature/dircommon/dir_connection_st.h"
 #include "feature/nodelist/networkstatus_st.h"
+#include "feature/nodelist/routerstatus_st.h"
 
 #include "test/fakechans.h"
 #include "test/hs_test_helpers.h"
@@ -561,6 +562,8 @@ get_metric(const char *name, const char *key, const char *value)
   get_metric(METRICS_NAME(relay_hsdir_fetch_total), "action", (action))
 #define POST_METRIC(action) \
   get_metric(METRICS_NAME(relay_hsdir_upload_total), "action", (action))
+#define DOS_METRIC(type) \
+  get_metric(METRICS_NAME(relay_dos_total), "type", (type))
 /* tor_relay_begindir_request_total{type} */
 #define REQ_SUM(type) \
   get_metric(METRICS_NAME(relay_begindir_request_total), "type", (type))
@@ -1375,6 +1378,67 @@ test_dir_server_conns_gauge(void *arg)
   }
 }
 
+static networkstatus_t *mock_hsdir_ns;
+static networkstatus_t *
+mock_hsdir_get_latest_consensus(void)
+{
+  return mock_hsdir_ns;
+}
+
+/* HSDirs count the anonymous onion service directory requests whose
+ * previous hop is not a known relay. */
+static void
+test_hsdir_prev_hop_counter(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  routerstatus_t known_rs;
+  or_circuit_t *circ;
+  const char *post = "POST /tor/hs/3/publish HTTP/1.0\r\n\r\n";
+  (void) arg;
+
+  init_test();
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  get_options_mutable()->ORPort_set = 1; /* Accept descriptor uploads. */
+
+  /* The zeroed previous hop identity is not a known relay. A second request
+   * on a circuit isn't counted: tor refuses it first. */
+  circ = new_or_circ(chan);
+  tt_int_op(hsdir_request_on_circuit(circ, post, "x"), OP_EQ, 400);
+  tt_int_op(hsdir_request_on_circuit(circ, post, "x"), OP_EQ, 0);
+  circ = new_or_circ(chan);
+  tt_int_op(hsdir_request_on_circuit(circ, GET("/tor/hs/3/x"), NULL),
+            OP_EQ, 404);
+  tt_int_op(hsdir_request_on_circuit(circ, GET("/tor/hs/3/x"), NULL),
+            OP_EQ, 0);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP), OP_EQ, 2);
+  tt_i64_op(DOS_METRIC("hsdir_unknown_prev_hop"), OP_EQ, 2);
+
+  /* Single-hop requests are refused, and not counted here. */
+  chan->is_client = 1;
+  hsdir_request_on_new_circ(chan, GET("/tor/hs/3/x"), NULL);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP), OP_EQ, 2);
+  chan->is_client = 0;
+
+  /* A previous hop in our consensus is known. */
+  memset(&known_rs, 0, sizeof(known_rs)); /* Matches the zeroed identity. */
+  mock_hsdir_ns = tor_malloc_zero(sizeof(networkstatus_t));
+  mock_hsdir_ns->routerstatus_list = smartlist_new();
+  smartlist_add(mock_hsdir_ns->routerstatus_list, &known_rs);
+  MOCK(networkstatus_get_latest_consensus, mock_hsdir_get_latest_consensus);
+  hsdir_request_on_new_circ(chan, GET("/tor/hs/3/x"), NULL);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP), OP_EQ, 2);
+
+ done:
+  UNMOCK(connection_write_to_buf_impl_);
+  UNMOCK(networkstatus_get_latest_consensus);
+  if (mock_hsdir_ns) {
+    smartlist_free(mock_hsdir_ns->routerstatus_list);
+    tor_free(mock_hsdir_ns);
+  }
+  circuit_free_all();
+  free_fake_channel(chan);
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -1400,6 +1464,8 @@ struct testcase_t hs_cache[] = {
   { "dir_request_url_table_types", test_dir_request_url_table_types, TT_FORK,
     NULL, NULL },
   { "dir_server_conns_gauge", test_dir_server_conns_gauge, TT_FORK,
+    NULL, NULL },
+  { "hsdir_prev_hop_counter", test_hsdir_prev_hop_counter, TT_FORK,
     NULL, NULL },
   { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },

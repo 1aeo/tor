@@ -83,6 +83,18 @@ void dos_close_client_conn(const or_connection_t *or_conn);
 
 int dos_should_refuse_single_hop_client(void);
 void dos_note_refuse_single_hop_client(void);
+
+/** DoS counters for onion service directory requests. */
+typedef enum dos_dir_stat_t {
+  /** Onion service directory requests over an anonymous circuit, and the
+   * first on it, whose previous hop is not a known relay. */
+  DOS_DIR_HSDIR_UNKNOWN_PREV_HOP,
+
+  DOS_DIR_STAT_COUNT
+} dos_dir_stat_t;
+
+void dos_note_dir_stat(dos_dir_stat_t stat);
+uint64_t dos_get_dir_stat(dos_dir_stat_t stat);
 void dos_note_circ_max_outq(const channel_t *chan);
 void dos_note_begindir_hsdir_rejected(void);
 

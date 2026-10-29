@@ -130,6 +130,9 @@ static uint64_t begindir_hsdir_num_rejected;
 /* Keep stats for the heartbeat. */
 static uint64_t num_single_hop_client_refused;
 
+/* Onion service directory DoS counters, indexed by dos_dir_stat_t. */
+static uint64_t dos_dir_stats[DOS_DIR_STAT_COUNT];
+
 /** Return the consensus parameter for the outbound circ_max_cell_queue_size
  * limit. */
 static uint32_t
@@ -804,6 +807,20 @@ uint64_t
 dos_get_num_single_hop_refused(void)
 {
   return num_single_hop_client_refused;
+}
+
+/** Count one more event for the DoS counter <b>stat</b>. */
+void
+dos_note_dir_stat(dos_dir_stat_t stat)
+{
+  dos_dir_stats[stat]++;
+}
+
+/** Return the DoS counter <b>stat</b>. */
+uint64_t
+dos_get_dir_stat(dos_dir_stat_t stat)
+{
+  return dos_dir_stats[stat];
 }
 
 /* Called when a CREATE cell is received from the given channel. */
