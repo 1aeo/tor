@@ -9,3 +9,11 @@
       rate as tor_relay_dos_total{type="hsdir_fetch_over_rate"} on the
       MetricsPort, which shows whether a flood of fetches concentrates on a few
       descriptors. Part of ticket 41339.
+    - Add the HSDirFetchShedding and HSDirFetchBudget options, and the
+      HSDirFetchShedding and HSDirFetchBudgetPercent consensus parameters. When
+      enabled (off by default), an HSDir that is asked for more onion service
+      descriptor bytes in a second than its budget sheds fetches in that second
+      and the next, answering first those within their descriptor's
+      HSDirDescriptorFetchRate. Until then, it refuses nothing. Such fetches
+      are counted on the MetricsPort whether or not it is enabled. Part of
+      ticket 41339.

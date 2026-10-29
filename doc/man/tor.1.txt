@@ -3206,6 +3206,8 @@ MetricsPort.
     The rate of fetches per second of each cached onion service descriptor,
     at least 1, over which an HSDir counts them as
     tor_relay_dos_total\{type="hsdir_fetch_over_rate"} on the MetricsPort.
+    While it sheds fetches, it answers those within this rate first, up to
+    half of HSDirFetchBudget a second. See HSDirFetchShedding.
     (Default: 5)
 
 [[HSDirDescriptorFetchBurst]] **HSDirDescriptorFetchBurst** __NUM__::
@@ -3214,6 +3216,39 @@ MetricsPort.
     allowed before they count as over HSDirDescriptorFetchRate. It is also
     the most fetches in any one second that count as within the rate.
     (Default: 20)
+
+[[HSDirFetchShedding]] **HSDirFetchShedding** **0**|**1**|**auto**::
+
+    Shed onion service descriptor fetches, by closing their circuits, when
+    this HSDir is asked for more descriptor bytes in a second than
+    HSDirFetchBudget. No fetch is refused until a second goes over the
+    budget. In the second after one over the budget, fetches within their
+    descriptor's HSDirDescriptorFetchRate and HSDirDescriptorFetchBurst are
+    answered first, up to half the budget, and the others at random, with
+    odds that would have kept the second before within the budget; so a
+    flood of fetches of a few descriptors is shed before the fetches of the
+    others. In no second is more than one and a half times the budget
+    answered, unless a single descriptor is larger than that. Clients retry
+    a refused fetch at another of the descriptor's HSDirs. While this HSDir
+    sheds, someone who keeps it over its budget can learn roughly how often
+    a descriptor is fetched here. Whatever this value, fetches made once a
+    second's requests exceed the budget, or in the second after, are
+    counted on the MetricsPort as
+    tor_relay_dos_total\{type="hsdir_fetch_pressure"}, and those that are,
+    or would be, refused as \{type="hsdir_fetch_shed"}; with this option
+    off, every fetch is answered. "auto" means use the consensus parameter.
+    If not defined in the consensus, the value is 0. (Default: auto)
+
+[[HSDirFetchBudget]] **HSDirFetchBudget** __N__ **bytes**|**KBytes**|**MBytes**|**GBytes**|**TBytes**|**KBits**|**MBits**|**GBits**|**TBits**::
+
+    The onion service descriptor bytes this HSDir may be asked for in a
+    second before it sheds fetches. Each fetch counts as the size of the
+    descriptor it asks for, whether or not it is answered. See
+    HSDirFetchShedding. If 0, use HSDirFetchBudgetPercent (a consensus
+    parameter, by default 50) percent of the lower of this relay's
+    configured bandwidth rate and its observed bandwidth, and at least 512
+    KBytes. Fetches of descriptors this HSDir does not have, or that it
+    refuses for another reason first, are not counted. (Default: 0)
 
 
 For onion services, mitigations are a work in progress and multiple options

@@ -370,7 +370,8 @@ test_status_hb_not_in_consensus(void *arg)
                  "[DoSBeginDirRateEnabled disabled], "
                  "0 BEGIN_DIR HSDir requests rejected, "
                  "0 INTRODUCE2 rejected, "
-                 "[HSDirRefuseUnknownPrevHop disabled].\n");
+                 "[HSDirRefuseUnknownPrevHop disabled], "
+                 "[HSDirFetchShedding disabled].\n");
   tt_int_op(mock_saved_log_n_entries(), OP_EQ, 6);
 
  done:

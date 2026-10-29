@@ -17,6 +17,7 @@
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/nodelist.h"
 #include "feature/nodelist/routerlist.h"
+#include "feature/stats/bwhist.h"
 
 #include "feature/nodelist/networkstatus_st.h"
 #include "core/or/or_circuit_st.h"
@@ -656,14 +657,357 @@ test_dos_dir_heartbeat(void *arg)
 
   get_options_mutable()->ORPort_set = 1;
   dos_opts->HSDirRefuseUnknownPrevHop = 1;
+  dos_opts->HSDirFetchShedding = 1;
+  dos_init();
+  dos_note_dir_stat(DOS_DIR_HSDIR_FETCH_SHED);
   dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
   dos_note_dir_stat(DOS_DIR_HSDIR_UNKNOWN_PREV_HOP);
   setup_full_capture_of_logs(LOG_NOTICE);
   dos_log_heartbeat();
-  expect_single_log_msg_containing("2 HSDir requests from unknown relays");
+  expect_single_log_msg_containing("2 HSDir requests from unknown relays, "
+                                   "1 HSDir descriptor fetches selected "
+                                   "for shedding");
 
  done:
   teardown_capture_of_logs();
+}
+
+static uint32_t lottery_draw;
+static uint32_t
+mock_hsdir_fetch_lottery_draw(void)
+{
+  return lottery_draw;
+}
+
+static int observed_bw;
+static int
+mock_bwhist_bandwidth_assess(void)
+{
+  return observed_bw;
+}
+
+/** Ask for <b>n</b> fetches of <b>len</b> bytes of the descriptor whose fetch
+ * rate limiter is <b>bucket</b>. Return how many are answered. */
+static int
+hsdir_fetches(token_bucket_ctr_t *bucket, int n, size_t len)
+{
+  int answered = 0;
+  for (int i = 0; i < n; i++)
+    answered += dos_hsdir_desc_fetch_allowed(bucket, len);
+  return answered;
+}
+
+static void
+test_dos_hsdir_fetch_shedding(void *arg)
+{
+  dos_options_t *dos_opts = get_dos_options(get_options_mutable());
+  or_options_t *options = get_options_mutable();
+  token_bucket_ctr_t a, b, c;
+  uint64_t now = 100 * BILLION;
+  uint64_t shed;
+  (void) arg;
+
+  memset(&a, 0, sizeof(a));
+  memset(&b, 0, sizeof(b));
+  memset(&c, 0, sizeof(c));
+  monotime_enable_test_mocking();
+  monotime_coarse_set_mock_time_nsec(now);
+  MOCK(hsdir_fetch_lottery_draw, mock_hsdir_fetch_lottery_draw);
+  MOCK(networkstatus_get_latest_consensus,
+       mock_networkstatus_get_latest_consensus);
+  options->ORPort_set = 1;
+  dos_opts->HSDirFetchShedding = 1;
+  dos_opts->HSDirDescriptorFetchRate = 1;
+  dos_opts->HSDirDescriptorFetchBurst = 1;
+  dos_opts->HSDirFetchBudget = 1000; /* Ten 100-byte fetches a second. */
+  lottery_draw = 999999; /* Every lottery is lost. */
+
+  /* Within the budget, nothing is refused, even over a descriptor's rate. */
+  for (int i = 0; i < 3; i++) {
+    tt_int_op(hsdir_fetches(&a, 10, 100), OP_EQ, 10);
+    monotime_coarse_set_mock_time_nsec(now += BILLION);
+  }
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_OVER_RATE), OP_EQ, 27);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE), OP_EQ, 0);
+
+  /* In a first second over it, at most half again the budget is answered. */
+  tt_int_op(hsdir_fetches(&a, 100, 100), OP_EQ, 15);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE), OP_EQ, 90);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED), OP_EQ, 85);
+
+  /* In the next second, fetches within their descriptor's rate are answered
+   * first, up to half the budget, even after the others: those are shed
+   * unless they win the lottery, up to the budget. */
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&b, 1, 100), OP_EQ, 1);
+  tt_int_op(hsdir_fetches(&a, 100, 100), OP_EQ, 1);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED), OP_EQ, 85 + 99);
+  lottery_draw = 0;
+  tt_int_op(hsdir_fetches(&a, 100, 100), OP_EQ, 10);
+  tt_int_op(hsdir_fetches(&c, 1, 100), OP_EQ, 1);
+
+  /* The odds would have kept the last second within the budget: of its
+   * 20200 bytes asked for, 300 were within their rates, so a fetch is
+   * answered with chance (1000 - 300) / (20200 - 300). */
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  lottery_draw = 35175;
+  tt_int_op(hsdir_fetches(&a, 2, 100), OP_EQ, 1);
+  lottery_draw = 35174;
+  tt_int_op(hsdir_fetches(&a, 1, 100), OP_EQ, 1);
+
+  /* With the defense off, the same fetches are counted, and answered. */
+  dos_opts->HSDirFetchShedding = 0;
+  lottery_draw = 999999;
+  shed = dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED);
+  tt_int_op(hsdir_fetches(&a, 10, 100), OP_EQ, 10);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED), OP_EQ, shed + 10);
+
+  /* The consensus can enable it, the torrc overrides it, and it only applies
+   * to public relays. */
+  dos_opts->HSDirFetchShedding = -1;
+  tt_int_op(hsdir_fetches(&a, 1, 100), OP_EQ, 1);
+  dummy_ns = tor_malloc_zero(sizeof(networkstatus_t));
+  dummy_ns->net_params = smartlist_new();
+  smartlist_add(dummy_ns->net_params, (char *) "HSDirFetchShedding=1");
+  tt_int_op(hsdir_fetches(&a, 1, 100), OP_EQ, 0);
+  options->ORPort_set = 0;
+  tt_int_op(hsdir_fetches(&a, 1, 100), OP_EQ, 1);
+  options->ORPort_set = 1;
+  dos_opts->HSDirFetchShedding = 1;
+
+  /* A flood every other second is held to half again the budget. */
+  lottery_draw = 0;
+  for (int i = 0; i < 2; i++) {
+    monotime_coarse_set_mock_time_nsec(now += BILLION);
+    tt_int_op(hsdir_fetches(&b, 1, 100), OP_EQ, 1);
+    monotime_coarse_set_mock_time_nsec(now += BILLION);
+    tt_int_op(hsdir_fetches(&a, 100, 100), OP_EQ, 15);
+  }
+
+  /* After a second without fetches, nothing is shed. */
+  lottery_draw = 999999;
+  monotime_coarse_set_mock_time_nsec(now += 2 * BILLION);
+  tt_int_op(hsdir_fetches(&a, 10, 100), OP_EQ, 10);
+
+  /* By default, the budget is a share of the lower of the configured and
+   * the observed bandwidth, and at least 512 KB. */
+  dos_opts->HSDirFetchBudget = 0;
+  MOCK(bwhist_bandwidth_assess, mock_bwhist_bandwidth_assess);
+  options->BandwidthRate = options->MaxAdvertisedBandwidth = 10000000;
+  options->RelayBandwidthRate = 0;
+  observed_bw = 4000000;
+  tt_u64_op(hsdir_fetch_budget(), OP_EQ, 2000000);
+  observed_bw = 0;
+  tt_u64_op(hsdir_fetch_budget(), OP_EQ, 5000000);
+  smartlist_add(dummy_ns->net_params, (char *) "HSDirFetchBudgetPercent=20");
+  tt_u64_op(hsdir_fetch_budget(), OP_EQ, 2000000);
+  options->BandwidthRate = 100000;
+  tt_u64_op(hsdir_fetch_budget(), OP_EQ, 512 * 1024);
+  /* The consensus percentage is clamped to [1, 100], and an explicit budget
+   * is capped at UINT32_MAX. */
+  options->BandwidthRate = options->MaxAdvertisedBandwidth = 100000000;
+  smartlist_clear(dummy_ns->net_params);
+  smartlist_add(dummy_ns->net_params, (char *) "HSDirFetchBudgetPercent=0");
+  tt_u64_op(hsdir_fetch_budget(), OP_EQ, 1000000);
+  smartlist_clear(dummy_ns->net_params);
+  smartlist_add(dummy_ns->net_params, (char *) "HSDirFetchBudgetPercent=200");
+  tt_u64_op(hsdir_fetch_budget(), OP_EQ, 100000000);
+  dos_opts->HSDirFetchBudget = UINT64_C(1) << 40;
+  tt_u64_op(hsdir_fetch_budget(), OP_EQ, UINT32_MAX);
+
+ done:
+  monotime_disable_test_mocking();
+  UNMOCK(hsdir_fetch_lottery_draw);
+  UNMOCK(networkstatus_get_latest_consensus);
+  UNMOCK(bwhist_bandwidth_assess);
+  if (dummy_ns)
+    smartlist_free(dummy_ns->net_params);
+  tor_free(dummy_ns);
+}
+
+/* Edges of HSDir fetch shedding that test_dos_hsdir_fetch_shedding() does
+ * not reach. Budget 1000, fetches of 100 bytes, rate 1, burst 1. */
+static void
+test_dos_hsdir_fetch_shedding_edges(void *arg)
+{
+  dos_options_t *dos_opts = get_dos_options(get_options_mutable());
+  or_options_t *options = get_options_mutable();
+  token_bucket_ctr_t heavy, lb[6];
+  uint64_t now = 0;
+  uint64_t shed, over;
+  uint32_t max_draw = 0;
+  int n;
+  (void) arg;
+
+  memset(&heavy, 0, sizeof(heavy));
+  memset(lb, 0, sizeof(lb));
+  monotime_enable_test_mocking();
+  monotime_coarse_set_mock_time_nsec(now);
+
+  /* the documented defaults. */
+  tt_int_op(dos_opts->HSDirDescriptorFetchRate, OP_EQ, 5);
+  tt_int_op(dos_opts->HSDirDescriptorFetchBurst, OP_EQ, 20);
+  tt_int_op(dos_opts->HSDirFetchShedding, OP_EQ, -1);
+  tt_u64_op(dos_opts->HSDirFetchBudget, OP_EQ, 0);
+  options->ORPort_set = 1;
+  dos_opts->HSDirFetchShedding = 1;
+  dos_opts->HSDirDescriptorFetchRate = 1;
+  dos_opts->HSDirDescriptorFetchBurst = 1;
+  dos_opts->HSDirFetchBudget = 1000;
+
+  /* the real lottery draws below a million, over the whole range. */
+  for (int i = 0; i < 1000; i++) {
+    uint32_t d = hsdir_fetch_lottery_draw();
+    tt_u64_op(d, OP_LT, 1000000);
+    max_draw = MAX(max_draw, d);
+  }
+  tt_u64_op(max_draw, OP_GE, 500000);
+  MOCK(hsdir_fetch_lottery_draw, mock_hsdir_fetch_lottery_draw);
+  lottery_draw = 999999;
+
+  /* second 0, the first of the process, is within the budget too. */
+  tt_int_op(hsdir_fetches(&heavy, 10, 100), OP_EQ, 10);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE), OP_EQ, 0);
+
+  /* a new HSDirFetchBudget applies from the next second. */
+  dos_opts->HSDirFetchBudget = 2000;
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 20, 100), OP_EQ, 20);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE), OP_EQ, 0);
+  dos_opts->HSDirFetchBudget = 1000;
+
+  /* a second's first answer is never over the ceiling, however large.
+   * However far over the budget a second was, a fetch the next second still
+   * wins the lottery with a chance of 1000 in a million. */
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 1, 2000000), OP_EQ, 1);
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 0);
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1); /* Within its rate. */
+  lottery_draw = 999;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1);
+  lottery_draw = 1000;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 0);
+
+  /* an over-budget second: 2000 bytes asked, 100 within their rate. */
+  lottery_draw = 999999;
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 20, 100), OP_EQ, 15);
+
+  /* while shedding, fetches within their rate are answered first up to
+   * half the budget, and no further. */
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  for (n = 0; n < 6; n++)
+    if (!hsdir_fetches(&lb[n], 1, 100))
+      break;
+  tt_int_op(n, OP_EQ, 5);
+  tt_int_op(hsdir_fetches(&heavy, 20, 100), OP_EQ, 0);
+
+  /* the share of fetches within their rate is per second; the odds
+   * count at most half the budget of the 700 bytes asked within their rate:
+   * (1000 - 500) / (2600 - 500), or 238095 in a million. */
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  for (n = 0; n < 6; n++)
+    if (!hsdir_fetches(&lb[n], 1, 100))
+      break;
+  tt_int_op(n, OP_EQ, 5);
+  lottery_draw = 238094;
+  tt_int_op(hsdir_fetches(&heavy, 2, 100), OP_EQ, 2);
+  lottery_draw = 238095;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 0);
+  lottery_draw = 999999;
+  tt_int_op(hsdir_fetches(&heavy, 20, 100), OP_EQ, 0);
+
+  /* when not enforcing, fetches that would be shed don't count towards
+   * the hard ceiling, so the counters mirror enforcement. */
+  dos_opts->HSDirFetchShedding = 0;
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  shed = dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED);
+  tt_int_op(hsdir_fetches(&heavy, 20, 100), OP_EQ, 20);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED), OP_EQ, shed + 19);
+  tt_int_op(hsdir_fetches(&lb[0], 1, 100), OP_EQ, 1);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_SHED), OP_EQ, shed + 19);
+
+  /* a new HSDirFetchBudget changes neither whether the second after one
+   * over the old budget sheds nor its odds: (1000 - 100) / (2000 - 100), or
+   * 473684 in a million. */
+  dos_opts->HSDirFetchShedding = 1;
+  monotime_coarse_set_mock_time_nsec(now += 2 * BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 20, 100), OP_EQ, 15);
+  dos_opts->HSDirFetchBudget = 2000;
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1); /* Within its rate. */
+  lottery_draw = 473683;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1);
+  lottery_draw = 473684;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 0);
+
+  /* nor how much of what was asked within its rate is answered first: half
+   * the old budget. Of the 2000 bytes asked in a second over a budget of
+   * 1000, 600 are within their rates, so the odds are (1000 - 500) /
+   * (2000 - 500), or 333333 in a million, even if the budget is then 2000. */
+  dos_opts->HSDirFetchBudget = 1000;
+  lottery_draw = 999999;
+  monotime_coarse_set_mock_time_nsec(now += 2 * BILLION);
+  for (n = 0; n < 5; n++)
+    hsdir_fetches(&lb[n], 1, 100);
+  hsdir_fetches(&heavy, 15, 100);
+  dos_opts->HSDirFetchBudget = 2000;
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1); /* Within its rate. */
+  lottery_draw = 333332;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1);
+  lottery_draw = 333333;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 0);
+
+  /* the budget, the ceiling and the share answered first are exact to the
+   * byte, and a second keeps the budget it started with: a second asked for
+   * one byte over its budget is over it, and answers up to exactly half
+   * again its budget; the next answers first up to exactly half of it; and
+   * a second asked for one byte over its budget is followed by one that
+   * sheds. */
+  dos_opts->HSDirFetchBudget = 1000;
+  lottery_draw = 999999;
+  monotime_coarse_set_mock_time_nsec(now += 2 * BILLION);
+  over = dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE);
+  tt_int_op(hsdir_fetches(&heavy, 1, 1000), OP_EQ, 1);
+  dos_opts->HSDirFetchBudget = 2000;
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE), OP_EQ, over);
+  tt_int_op(hsdir_fetches(&heavy, 1, 1), OP_EQ, 1);
+  tt_u64_op(dos_get_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE), OP_EQ, over + 1);
+  tt_int_op(hsdir_fetches(&heavy, 1, 499), OP_EQ, 1);
+  tt_int_op(hsdir_fetches(&heavy, 1, 1), OP_EQ, 0);
+  dos_opts->HSDirFetchBudget = 1000;
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&lb[0], 1, 500), OP_EQ, 1);
+  dos_opts->HSDirFetchBudget = 2000;
+  tt_int_op(hsdir_fetches(&lb[1], 1, 1), OP_EQ, 0);
+  dos_opts->HSDirFetchBudget = 1000;
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 1, 1001), OP_EQ, 1);
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 2, 100), OP_EQ, 1);
+
+  /* the share of fetches within their rate in the odds counts the bytes
+   * asked for, answered or not: of 2000 bytes asked, 300 within their rates,
+   * 200 of them shed at the ceiling, (1000 - 300) / (2000 - 300), or 411764
+   * in a million. */
+  dos_opts->HSDirFetchBudget = 1000;
+  monotime_coarse_set_mock_time_nsec(now += 2 * BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 15, 100), OP_EQ, 15);
+  tt_int_op(hsdir_fetches(&lb[0], 1, 100), OP_EQ, 0);
+  tt_int_op(hsdir_fetches(&lb[1], 1, 100), OP_EQ, 0);
+  tt_int_op(hsdir_fetches(&heavy, 3, 100), OP_EQ, 0);
+  monotime_coarse_set_mock_time_nsec(now += BILLION);
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1); /* Within its rate. */
+  lottery_draw = 411763;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 1);
+  lottery_draw = 411764;
+  tt_int_op(hsdir_fetches(&heavy, 1, 100), OP_EQ, 0);
+
+ done:
+  monotime_disable_test_mocking();
+  UNMOCK(hsdir_fetch_lottery_draw);
 }
 
 struct testcase_t dos_tests[] = {
@@ -676,5 +1020,9 @@ struct testcase_t dos_tests[] = {
   { "begindir_limit", test_dos_begindir_limit, TT_FORK, NULL, NULL },
   { "refuse_single_hop", test_dos_refuse_single_hop, TT_FORK, NULL, NULL },
   { "dir_heartbeat", test_dos_dir_heartbeat, TT_FORK, NULL, NULL },
+  { "hsdir_fetch_shedding", test_dos_hsdir_fetch_shedding, TT_FORK,
+    NULL, NULL },
+  { "hsdir_fetch_shedding_edges", test_dos_hsdir_fetch_shedding_edges,
+    TT_FORK, NULL, NULL },
   END_OF_TESTCASES
 };

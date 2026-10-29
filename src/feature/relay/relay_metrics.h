@@ -156,7 +156,8 @@ typedef enum {
    * authenticated (see connection_dir_is_anonymous()): 503. */
   HSDIR_GET_SINGLE_HOP,
   /** Refused, closing the circuit without an answer: the second HSDir
-   * request on its circuit, or one HSDirRefuseUnknownPrevHop refused. */
+   * request on its circuit, or one HSDirRefuseUnknownPrevHop refused or
+   * HSDirFetchShedding shed. */
   HSDIR_GET_REFUSED,
 
   HSDIR_GET_ACTION_COUNT

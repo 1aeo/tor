@@ -12,6 +12,7 @@
 #define HS_CACHE_PRIVATE
 #define CHANNEL_OBJECT_PRIVATE
 #define CIRCUITLIST_PRIVATE
+#define DOS_PRIVATE
 
 #include "app/config/config.h"
 #include "app/config/or_options_st.h"
@@ -1604,6 +1605,84 @@ test_hsdir_desc_fetch_over_rate(void *arg)
   tor_free(get);
 }
 
+static uint32_t
+mock_hsdir_fetch_lottery_draw(void)
+{
+  return 999999; /* Every lottery is lost. */
+}
+
+/* While over HSDirFetchBudget, an HSDir with HSDirFetchShedding sheds
+ * fetches by closing their circuit, answering those within their
+ * descriptor's rate first. */
+static void
+test_hsdir_desc_fetch_shedding(void *arg)
+{
+  channel_t *chan = new_fake_channel();
+  ed25519_keypair_t kp_a, kp_b;
+  hs_descriptor_t *desc_a = NULL, *desc_b = NULL;
+  char *str_a = NULL, *str_b = NULL, *get_a = NULL, *get_b = NULL;
+  dos_options_t *dos_opts;
+  or_circuit_t *circ;
+  const uint64_t billion = 1000000000;
+  uint64_t now = 100 * billion;
+  (void) arg;
+
+  init_test();
+  monotime_enable_test_mocking();
+  monotime_coarse_set_mock_time_nsec(now);
+  MOCK(connection_write_to_buf_impl_, connection_write_to_buf_mock);
+  MOCK(hsdir_fetch_lottery_draw, mock_hsdir_fetch_lottery_draw);
+  get_options_mutable()->ORPort_set = 1; /* Accept uploads, and enforce. */
+  tt_int_op(ed25519_keypair_generate(&kp_a, 0), OP_EQ, 0);
+  tt_int_op(ed25519_keypair_generate(&kp_b, 0), OP_EQ, 0);
+  desc_a = hs_helper_build_hs_desc_with_ip(&kp_a);
+  desc_b = hs_helper_build_hs_desc_with_ip(&kp_b);
+  tt_int_op(hs_desc_encode_descriptor(desc_a, &kp_a, NULL, &str_a), OP_EQ, 0);
+  tt_int_op(hs_desc_encode_descriptor(desc_b, &kp_b, NULL, &str_b), OP_EQ, 0);
+  tt_int_op(hs_cache_store_as_dir(str_a), OP_EQ, 0);
+  tt_int_op(hs_cache_store_as_dir(str_b), OP_EQ, 0);
+  tor_asprintf(&get_a, GET("/tor/hs/3/%s"), helper_get_hsdir_query(desc_a));
+  tor_asprintf(&get_b, GET("/tor/hs/3/%s"), helper_get_hsdir_query(desc_b));
+  dos_opts = get_dos_options(get_options_mutable());
+  dos_opts->HSDirFetchShedding = 1;
+  dos_opts->HSDirDescriptorFetchRate = 1;
+  dos_opts->HSDirDescriptorFetchBurst = 1;
+  dos_opts->HSDirFetchBudget = 4 * strlen(str_a);
+
+  /* A's first six fetches fit in half again the budget; the seventh closes
+   * its circuit without an answer. */
+  for (int i = 0; i < 6; i++)
+    tt_int_op(hsdir_request_on_new_circ(chan, get_a, NULL), OP_EQ, 200);
+  circ = new_or_circ(chan);
+  tt_int_op(hsdir_request_on_circuit(circ, get_a, NULL), OP_EQ, 0);
+  tt_int_op(TO_CIRCUIT(circ)->marked_for_close_reason, OP_EQ,
+            END_CIRC_REASON_RESOURCELIMIT);
+
+  /* In the next second, B and A's fetch within its rate are answered; A's
+   * next one is shed. */
+  monotime_coarse_set_mock_time_nsec(now += billion);
+  tt_int_op(hsdir_request_on_new_circ(chan, get_b, NULL), OP_EQ, 200);
+  tt_int_op(hsdir_request_on_new_circ(chan, get_a, NULL), OP_EQ, 200);
+  tt_int_op(hsdir_request_on_new_circ(chan, get_a, NULL), OP_EQ, 0);
+  tt_i64_op(GET_METRIC("success"), OP_EQ, 8);
+  tt_i64_op(GET_METRIC("refused"), OP_EQ, 2);
+  tt_i64_op(DOS_METRIC("hsdir_fetch_shed"), OP_EQ, 2);
+  tt_i64_op(DOS_METRIC("hsdir_fetch_pressure"), OP_EQ, 6);
+
+ done:
+  monotime_disable_test_mocking();
+  UNMOCK(connection_write_to_buf_impl_);
+  UNMOCK(hsdir_fetch_lottery_draw);
+  circuit_free_all();
+  free_fake_channel(chan);
+  hs_descriptor_free(desc_a);
+  hs_descriptor_free(desc_b);
+  tor_free(str_a);
+  tor_free(str_b);
+  tor_free(get_a);
+  tor_free(get_b);
+}
+
 struct testcase_t hs_cache[] = {
   { "hsdir_request_limit_get", test_hsdir_request_limit, TT_FORK,
     &passthrough_setup, (void *) "get" },
@@ -1635,6 +1714,8 @@ struct testcase_t hs_cache[] = {
   { "hsdir_prev_hop_defense", test_hsdir_prev_hop_defense, TT_FORK,
     NULL, NULL },
   { "hsdir_desc_fetch_over_rate", test_hsdir_desc_fetch_over_rate, TT_FORK,
+    NULL, NULL },
+  { "hsdir_desc_fetch_shedding", test_hsdir_desc_fetch_shedding, TT_FORK,
     NULL, NULL },
   { "downloaded_counter_as_dir", test_downloaded_counter_as_dir, TT_FORK,
     NULL, NULL },

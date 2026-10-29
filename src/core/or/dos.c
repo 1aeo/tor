@@ -18,7 +18,9 @@
 #include "feature/hs/hs_dos.h"
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/nodelist.h"
+#include "feature/relay/relay_config.h"
 #include "feature/relay/routermode.h"
+#include "feature/stats/bwhist.h"
 #include "feature/stats/geoip_stats.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/time/compat_time.h"
@@ -1141,6 +1143,140 @@ dos_hsdir_note_desc_fetch(token_bucket_ctr_t *bucket)
   return false;
 }
 
+/** Return true iff an HSDir should refuse the descriptor fetches it sheds
+ * while over HSDirFetchBudget. */
+static int
+dos_should_shed_hsdir_fetches(void)
+{
+  return dos_defense_enabled(dos_get_options()->HSDirFetchShedding,
+                             "HSDirFetchShedding");
+}
+
+/** Lowest automatic HSDirFetchBudget, in bytes per second. */
+#define HSDIR_FETCH_BUDGET_MIN (512 * 1024)
+/** Lowest chance, in millionths, that a fetch an HSDir doesn't answer first
+ * is answered while it sheds. */
+#define HSDIR_FETCH_LOTTERY_MIN_PPM 1000
+
+/** Descriptor fetches an HSDir was asked for and answered, in bytes, in the
+ * current second. See dos_hsdir_desc_fetch_allowed(). */
+static struct {
+  /** The second this is for. */
+  uint32_t sec;
+  /** HSDirFetchBudget in this second, in bytes per second. */
+  uint64_t budget;
+  /** Was the HSDir asked for more than its budget in the second before? */
+  bool shedding;
+  /** While shedding, the chance in millionths that a fetch not answered
+   * first is answered. */
+  uint32_t lottery_ppm;
+  /** Bytes asked for; of those, within their descriptor's rate; answered
+   * first; answered in all. */
+  uint64_t asked, asked_light, light, answered;
+} hsdir_fetch;
+
+/** Return the onion service descriptor bytes an HSDir may be asked for in a
+ * second before it sheds fetches: HSDirFetchBudget, or if it is 0, a share
+ * of the lower of the relay's configured and observed bandwidth. */
+STATIC uint64_t
+hsdir_fetch_budget(void)
+{
+  uint64_t budget = dos_get_options()->HSDirFetchBudget;
+
+  if (!budget) {
+    uint64_t rate = relay_get_effective_bwrate(get_options());
+    const int observed = bwhist_bandwidth_assess();
+    if (observed > 0)
+      rate = MIN(rate, (uint64_t) observed);
+    budget = rate * networkstatus_get_param(NULL, "HSDirFetchBudgetPercent",
+                                            50, 1, 100) / 100;
+    budget = MAX(budget, HSDIR_FETCH_BUDGET_MIN);
+  }
+  return MIN(budget, UINT32_MAX);
+}
+
+/** Return a random number below a million. */
+MOCK_IMPL(STATIC uint32_t,
+hsdir_fetch_lottery_draw,(void))
+{
+  return crypto_fast_rng_get_uint(get_thread_fast_rng(), 1000000);
+}
+
+/** If <b>now</b> isn't the current second of HSDir fetch accounting, start
+ * it. We shed in it iff we were asked for more than our budget in the second
+ * just before, with lottery odds that would have kept that second within
+ * the budget. */
+static void
+hsdir_fetch_new_second(uint32_t now)
+{
+  if (now == hsdir_fetch.sec && hsdir_fetch.budget)
+    return;
+
+  const uint64_t budget = hsdir_fetch.budget;
+  const uint64_t first = MIN(hsdir_fetch.asked_light, budget / 2);
+
+  hsdir_fetch.shedding = now == hsdir_fetch.sec + 1 &&
+                         hsdir_fetch.asked > budget;
+  if (hsdir_fetch.shedding) {
+    hsdir_fetch.lottery_ppm = (uint32_t)
+      CLAMP(HSDIR_FETCH_LOTTERY_MIN_PPM,
+            (budget - first) * 1000000 / (hsdir_fetch.asked - first),
+            1000000);
+  }
+  hsdir_fetch.sec = now;
+  hsdir_fetch.budget = hsdir_fetch_budget();
+  hsdir_fetch.asked = hsdir_fetch.asked_light = 0;
+  hsdir_fetch.light = hsdir_fetch.answered = 0;
+}
+
+/** Return whether an HSDir should answer a fetch of <b>len</b> bytes of a
+ * cached onion service descriptor whose fetch rate limiter is <b>bucket</b>.
+ *
+ * HSDirFetchBudget counts the descriptor bytes we are asked for, answered
+ * or not. We refuse no fetch until a second goes over it. In the second
+ * after one over it, we answer fetches within their descriptor's rate
+ * first, up to half the budget, and the others by lottery, up to the
+ * budget, so that a flood of a few descriptors is shed before the fetches of
+ * the others. In no second do we answer more than one and a half times the
+ * budget, unless a single descriptor is larger than that. We count the
+ * fetches we would shed, and only refuse them if HSDirFetchShedding is
+ * enabled. */
+bool
+dos_hsdir_desc_fetch_allowed(token_bucket_ctr_t *bucket, size_t len)
+{
+  const bool light = dos_hsdir_note_desc_fetch(bucket);
+
+  hsdir_fetch_new_second((uint32_t) monotime_coarse_absolute_sec());
+  hsdir_fetch.asked += len;
+  if (light)
+    hsdir_fetch.asked_light += len;
+  if (!hsdir_fetch.shedding && hsdir_fetch.asked <= hsdir_fetch.budget)
+    goto answer;
+
+  dos_note_dir_stat(DOS_DIR_HSDIR_FETCH_PRESSURE);
+  if (hsdir_fetch.shedding && light &&
+      hsdir_fetch.light + len <= hsdir_fetch.budget / 2) {
+    hsdir_fetch.light += len;
+    goto answer;
+  }
+  /* The others: up to half again the budget, less the half that shedding
+   * keeps for those. */
+  if (hsdir_fetch.answered > hsdir_fetch.light &&
+      hsdir_fetch.answered - hsdir_fetch.light + len >
+      hsdir_fetch.budget * (hsdir_fetch.shedding ? 2 : 3) / 2)
+    goto shed;
+  if (!hsdir_fetch.shedding ||
+      hsdir_fetch_lottery_draw() < hsdir_fetch.lottery_ppm)
+    goto answer;
+
+ shed:
+  dos_note_dir_stat(DOS_DIR_HSDIR_FETCH_SHED);
+  return !dos_should_shed_hsdir_fetches();
+ answer:
+  hsdir_fetch.answered += len;
+  return true;
+}
+
 /* General API */
 
 /* Take any appropriate actions for the given geoip entry that is about to get
@@ -1355,6 +1491,15 @@ dos_log_heartbeat(void)
                            dos_dir_stats[DOS_DIR_HSDIR_UNKNOWN_PREV_HOP]);
   } else {
     smartlist_add_asprintf(elems, "[HSDirRefuseUnknownPrevHop disabled]");
+  }
+
+  if (dos_should_shed_hsdir_fetches()) {
+    smartlist_add_asprintf(elems,
+                           "%" PRIu64 " HSDir descriptor fetches selected "
+                           "for shedding",
+                           dos_dir_stats[DOS_DIR_HSDIR_FETCH_SHED]);
+  } else {
+    smartlist_add_asprintf(elems, "[HSDirFetchShedding disabled]");
   }
 
   char *msg = smartlist_join_strings(elems, ", ", 0, NULL);

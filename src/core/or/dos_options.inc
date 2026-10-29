@@ -88,11 +88,20 @@ CONF_VAR(DoSConnectionConnectDefenseTimePeriod, INTERVAL, 0, "0")
 CONF_VAR(HSDirRefuseUnknownPrevHop, AUTOBOOL, 0, "auto")
 
 /** Fetches per second of each cached onion service descriptor over which an
- * HSDir counts them. */
+ * HSDir counts them; while it sheds, it answers those within it first. */
 CONF_VAR(HSDirDescriptorFetchRate, POSINT, 0, "5")
 
 /** Burst of fetches of each cached descriptor allowed before they count as
  * over HSDirDescriptorFetchRate. */
 CONF_VAR(HSDirDescriptorFetchBurst, POSINT, 0, "20")
+
+/** Autobool: Should an HSDir refuse the descriptor fetches it sheds while
+ * over HSDirFetchBudget? Overrides the consensus parameter of the same
+ * name. */
+CONF_VAR(HSDirFetchShedding, AUTOBOOL, 0, "auto")
+
+/** Onion service descriptor bytes an HSDir may be asked for in a second
+ * before it sheds fetches; 0 means a share of the relay's bandwidth. */
+CONF_VAR(HSDirFetchBudget, MEMUNIT, 0, "0")
 
 END_CONF_STRUCT(dos_options_t)

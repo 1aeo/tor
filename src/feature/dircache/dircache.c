@@ -1506,7 +1506,19 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
   /* Decode blinded key. This is certain to work else
    * hs_cache_lookup_as_dir() would have failed. */
   ed25519_public_from_base64(&blinded_key, pubkey_str);
-  dos_hsdir_note_desc_fetch(hs_cache_get_dir_fetch_limiter(&blinded_key));
+  if (!dos_hsdir_desc_fetch_allowed(
+                        hs_cache_get_dir_fetch_limiter(&blinded_key),
+                        strlen(desc_str))) {
+    static ratelim_t fetch_lim = RATELIM_INIT(600);
+    log_fn_ratelim(&fetch_lim, LOG_PROTOCOL_WARN, LD_REND,
+                   "Closing a circuit that fetched an onion service "
+                   "descriptor while we are over HSDirFetchBudget.");
+    relay_increment_hsdir_get_action(HSDIR_GET_REFUSED);
+    circuit_mark_for_close(
+                       TO_EDGE_CONN(TO_CONN(conn)->linked_conn)->on_circuit,
+                       END_CIRC_REASON_RESOURCELIMIT);
+    goto done;
+  }
 
   /* Found requested descriptor! Pass it to this nice client. */
   relay_increment_hsdir_get_action(HSDIR_GET_SUCCESS);
