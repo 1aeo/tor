@@ -50,6 +50,8 @@ static smartlist_t *socks_policy = NULL;
 static smartlist_t *dir_policy = NULL;
 /** Policy for incoming MetricsPort connections that must match. */
 static smartlist_t *metrics_policy = NULL;
+/** Mutex protecting metrics_policy across main and MetricsPort threads. */
+static tor_mutex_t *metrics_policy_mutex = NULL;
 /** Policy that addresses for incoming router descriptors must match in order
  * to be published by us. */
 static smartlist_t *authdir_reject_policy = NULL;
@@ -1071,7 +1073,13 @@ socks_policy_permits_address(const tor_addr_t *addr)
 int
 metrics_policy_permits_address(const tor_addr_t *addr)
 {
-  return addr_policy_permits_tor_addr(addr, 1, metrics_policy);
+  if (!metrics_policy_mutex)
+    return 0;
+  tor_mutex_acquire(metrics_policy_mutex);
+  int r = metrics_policy &&
+          addr_policy_permits_tor_addr(addr, 1, metrics_policy);
+  tor_mutex_release(metrics_policy_mutex);
+  return r;
 }
 
 /** Return true iff the address <b>addr</b> is in a country listed in the
@@ -1178,6 +1186,8 @@ validate_addr_policies(const or_options_t *options, char **msg)
     REJECT("Error in DirPolicy entry.");
   if (parse_addr_policy(options->SocksPolicy, &addr_policy, -1))
     REJECT("Error in SocksPolicy entry.");
+  if (parse_addr_policy(options->MetricsPortPolicy, &addr_policy, -1))
+    REJECT("Error in MetricsPortPolicy entry.");
   if (parse_addr_policy(options->AuthDirReject, &addr_policy,
                         ADDR_POLICY_REJECT))
     REJECT("Error in AuthDirReject entry.");
@@ -1253,12 +1263,20 @@ load_policy_from_option(config_line_t *config, const char *option_name,
 static int
 parse_metrics_port_policy(const or_options_t *options)
 {
+  smartlist_t *policy = NULL, *old;
   if (load_policy_from_option(options->MetricsPortPolicy, "MetricsPortPolicy",
-                              &metrics_policy, -1) < 0) {
+                              &policy, -1) < 0) {
     return -1;
   }
   /* It is a reject all by default. */
-  append_exit_policy_string(&metrics_policy, "reject *:*");
+  append_exit_policy_string(&policy, "reject *:*");
+  if (!metrics_policy_mutex)
+    metrics_policy_mutex = tor_mutex_new_nonrecursive();
+  tor_mutex_acquire(metrics_policy_mutex);
+  old = metrics_policy;
+  metrics_policy = policy;
+  tor_mutex_release(metrics_policy_mutex);
+  addr_policy_list_free(old);
   return 0;
 }
 
@@ -3126,8 +3144,12 @@ policies_free_all(void)
   socks_policy = NULL;
   addr_policy_list_free(dir_policy);
   dir_policy = NULL;
-  addr_policy_list_free(metrics_policy);
-  metrics_policy = NULL;
+  if (metrics_policy_mutex) {
+    tor_mutex_acquire(metrics_policy_mutex);
+    addr_policy_list_free(metrics_policy);
+    metrics_policy = NULL;
+    tor_mutex_release(metrics_policy_mutex);
+  }
   addr_policy_list_free(authdir_reject_policy);
   authdir_reject_policy = NULL;
   addr_policy_list_free(authdir_invalid_policy);

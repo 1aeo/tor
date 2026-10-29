@@ -61,6 +61,11 @@ test_config(void *arg)
 
   (void) arg;
 
+  /* Without a parsed MetricsPortPolicy, nothing is permitted. */
+  policies_free_all();
+  tor_addr_from_ipv4h(&addr, 0x01020304); /* 1.2.3.4 */
+  tt_int_op(metrics_policy_permits_address(&addr), OP_EQ, false);
+
   set_metrics_port(options);
 
   int ret = metrics_parse_ports(options, ports, &err_msg);
@@ -82,6 +87,17 @@ test_config(void *arg)
   tor_addr_from_ipv4h(&addr, 0x01020305); /* 1.2.3.5 */
   ret = metrics_policy_permits_address(&addr);
   tt_int_op(ret, OP_EQ, false);
+
+  /* A malformed reload is rejected and preserves the active policy. */
+  config_free_lines(options->MetricsPortPolicy);
+  config_get_lines("MetricsPortPolicy bad_token *4:*",
+                   &options->MetricsPortPolicy, 0);
+  tt_int_op(validate_addr_policies(options, &err_msg), OP_EQ, -1);
+  tor_free(err_msg);
+  tt_int_op(policies_parse_from_options(options), OP_EQ, -1);
+  tt_int_op(metrics_policy_permits_address(&addr), OP_EQ, false);
+  tor_addr_from_ipv4h(&addr, 0x01020304);
+  tt_int_op(metrics_policy_permits_address(&addr), OP_EQ, true);
 
  done:
   SMARTLIST_FOREACH(ports, port_cfg_t *, c, port_cfg_free(c));
