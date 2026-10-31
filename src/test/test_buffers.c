@@ -858,6 +858,129 @@ test_buffer_peek_startswith(void *arg)
   buf_free(buf);
 }
 
+/** Append an empty chunk to <b>buf</b>, as buf_read_from_fd() does when it
+ * allocates a chunk and then reads nothing.  Fill the chunk's unused memory
+ * with <b>stale</b>, so that a search that reads it gets a wrong answer. */
+static void
+add_empty_chunk(buf_t *buf, char stale)
+{
+  chunk_t *chunk = buf_add_chunk_with_capacity(buf, 1, 1);
+  memset(chunk->mem, stale, chunk->memlen);
+}
+
+/** Append the <b>n</b> bytes at <b>s</b> to <b>buf</b> with buf_move_all(),
+ * as linked connections do.  The bytes go into new chunks, after any empty
+ * chunk at the end of <b>buf</b>. */
+static void
+move_bytes(buf_t *buf, const char *s, size_t n)
+{
+  buf_t *tmp = buf_new();
+  buf_add(tmp, s, n);
+  buf_move_all(buf, tmp);
+  buf_free(tmp);
+}
+
+/* Regression test for bug 41377: HTTP headers next to an empty chunk. */
+static void
+test_buffers_http_empty_chunk(void *arg)
+{
+  buf_t *buf = NULL;
+  char *headers = NULL, *body = NULL;
+  size_t body_len = 0;
+  const char *rest = "\nX-Final: yup\r\n\r\nbody";
+  (void)arg;
+
+  /* The request so far ends with "\r\n\r", and the next chunk is empty, with
+   * a stale "\n" in its unused memory: the request is not complete yet. */
+  buf = buf_new();
+  buf_add_string(buf, "GET / HTTP/1.0\r\nHost: x\r\n\r");
+  add_empty_chunk(buf, '\n');
+  tt_int_op(buf_find_string_offset(buf, "\r\n\r\n", 4), OP_EQ, -1);
+  tt_int_op(fetch_from_buf_http(buf, &headers, 1024*16, &body, &body_len,
+                                1024*16, 0), OP_EQ, 0);
+  buf_add(buf, "\n", 1);
+  tt_int_op(fetch_from_buf_http(buf, &headers, 1024*16, &body, &body_len,
+                                1024*16, 0), OP_EQ, 1);
+  tt_str_op(headers, OP_EQ, "GET / HTTP/1.0\r\nHost: x\r\n\r\n");
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+
+  /* The response so far ends with the "\r" of a header line, the next chunk
+   * is empty, and the rest arrives in chunks after it: the search must not
+   * stop at the empty chunk. */
+  buf = buf_new();
+  buf_add_string(buf, "HTTP/1.0 200 OK\r\nX-A: 1\r");
+  add_empty_chunk(buf, 'x');
+  move_bytes(buf, rest, strlen(rest));
+  buf_assert_ok(buf);
+  tt_int_op(buf_find_string_offset(buf, "\r\n\r\n", 4), OP_EQ, 37);
+  tt_int_op(fetch_from_buf_http(buf, &headers, 1024*16, &body, &body_len,
+                                1024*16, 0), OP_EQ, 1);
+  tt_str_op(headers, OP_EQ,
+            "HTTP/1.0 200 OK\r\nX-A: 1\r\nX-Final: yup\r\n\r\n");
+  tt_str_op(body, OP_EQ, "body");
+
+ done:
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+}
+
+/* Regression test for bug 41377: put empty chunks at every pair of
+ * positions in a string (so at the head, at the tail, in the middle, and two
+ * in a row), and check that buf_find_string_offset() finds every substring
+ * where tor_memmem() does, and never matches the chunks' unused memory. */
+static void
+test_buffers_find_string_empty_chunks(void *arg)
+{
+  static const char s[] = "a\r\n\r\na\r\r\n\r\n";
+  const size_t len = strlen(s);
+  buf_t *buf = NULL;
+  char *a = NULL;
+  (void)arg;
+
+  for (size_t i = 0; i <= len; ++i) {
+    for (size_t j = i; j <= len; ++j) {
+      /* s[0..i), an empty chunk, s[i..j), an empty chunk, s[j..len).  The
+       * unused memory is all 'x', which is not in s. */
+      buf = buf_new();
+      buf_add(buf, s, i);
+      add_empty_chunk(buf, 'x');
+      move_bytes(buf, s + i, j - i);
+      add_empty_chunk(buf, 'x');
+      move_bytes(buf, s + j, len - j);
+      buf_assert_ok(buf);
+      for (size_t start = 0; start < len; ++start) {
+        const char pat[2] = { s[start], 'x' };
+        for (size_t n = 1; start + n <= len; ++n) {
+          const char *hit = tor_memmem(s, len, s + start, n);
+          tt_int_op(buf_find_string_offset(buf, s + start, n), OP_EQ,
+                    (int)(hit - s));
+        }
+        tt_int_op(buf_find_string_offset(buf, pat, 2), OP_EQ, -1);
+      }
+      buf_free(buf);
+    }
+  }
+
+  /* A needle that spans four data chunks and the small empty chunks between
+   * them (too small for their stale 'A's to complete it). */
+  a = tor_malloc(1201);
+  memset(a, 'A', 1201);
+  buf = buf_new_with_capacity(1);
+  for (int k = 0; k < 4; ++k) {
+    move_bytes(buf, a, 300);
+    add_empty_chunk(buf, 'A');
+  }
+  tt_int_op(buf_find_string_offset(buf, a, 1200), OP_EQ, 0);
+  tt_int_op(buf_find_string_offset(buf, a, 1201), OP_EQ, -1);
+
+ done:
+  buf_free(buf);
+  tor_free(a);
+}
+
 struct testcase_t buffer_tests[] = {
   { "basic", test_buffers_basic, TT_FORK, NULL, NULL },
   { "copy", test_buffer_copy, TT_FORK, NULL, NULL },
@@ -871,6 +994,9 @@ struct testcase_t buffer_tests[] = {
     NULL, NULL },
   { "chunk_size", test_buffers_chunk_size, 0, NULL, NULL },
   { "find_contentlen", test_buffers_find_contentlen, 0, NULL, NULL },
+  { "http_empty_chunk", test_buffers_http_empty_chunk, 0, NULL, NULL },
+  { "find_string_empty_chunks", test_buffers_find_string_empty_chunks, 0,
+    NULL, NULL },
 
   { "compress/zlib", test_buffers_compress, TT_FORK,
     &passthrough_setup, (char*)"deflate" },
