@@ -59,8 +59,10 @@
  * the head of the list, and added at the tail.  The list is singly linked,
  * and the buffer keeps a pointer to the head and the tail.
  *
- * Every chunk, except the tail, contains at least one byte of data.  Data in
- * each chunk is contiguous.
+ * Chunks usually hold at least one byte of data, but empty chunks can
+ * appear anywhere in the list: a read or a compression step can leave an
+ * empty tail chunk, and buf_move_all() can then append more chunks after
+ * it.  Data in each chunk is contiguous.
  *
  * When you need to treat the first N characters on a buffer as a contiguous
  * string, use the buf_pullup function to make them so.  Don't do this more
@@ -767,13 +769,16 @@ buf_find_pos_of_char(char ch, buf_pos_t *out)
 }
 
 /** Advance <b>pos</b> by a single character, if there are any more characters
- * in the buffer.  Returns 0 on success, -1 on failure. */
+ * in the buffer.  Returns 0 on success, -1 on failure.
+ *
+ * <b>pos</b> must refer to a byte of data.  On success, <b>pos</b> refers to
+ * the next byte of data, after skipping any empty chunks. */
 static inline int
 buf_pos_inc(buf_pos_t *pos)
 {
   tor_assert(pos->pos < BUF_MAX_LEN);
   ++pos->pos;
-  if (pos->pos == (ptrdiff_t)pos->chunk->datalen) {
+  while (pos->pos >= (ptrdiff_t)pos->chunk->datalen) {
     if (!pos->chunk->next)
       return -1;
     pos->chunk_pos += pos->chunk->datalen;
@@ -795,6 +800,11 @@ buf_matches_at_pos(const buf_pos_t *pos, const char *s, size_t n)
   memcpy(&p, pos, sizeof(p));
 
   while (1) {
+    /* buf_find_pos_of_char() and buf_pos_inc() never leave p outside the
+     * chunk's data. */
+    IF_BUG_ONCE(p.pos >= (ptrdiff_t)p.chunk->datalen) {
+      return 0;
+    }
     char ch = p.chunk->data[p.pos];
     if (ch != *s)
       return 0;
