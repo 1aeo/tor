@@ -1,0 +1,8 @@
+  o Minor bugfixes (OOM handler):
+    - Treat a buffer that holds no data as having age zero, and otherwise
+      use the age of its first chunk that holds data. Previously, a drained
+      buffer could keep an empty chunk left over from an earlier read, and
+      its reported age kept growing while the connection sat idle. Under
+      memory pressure, this made us close idle connections (and circuits
+      with idle streams) before ones with genuinely old queued data,
+      freeing almost no memory. Bugfix on 0.2.5.3-alpha.

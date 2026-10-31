@@ -498,18 +498,28 @@ buf_add_chunk_with_capacity(buf_t *buf, size_t capacity, int capped)
   return chunk;
 }
 
-/** Return the age of the oldest chunk in the buffer <b>buf</b>, in
- * timestamp units.  Requires the current monotonic timestamp as its
- * input <b>now</b>.
+/** Return the age of the first chunk in the buffer <b>buf</b> that holds any
+ * data, in timestamp units.  Requires the current monotonic timestamp as its
+ * input <b>now</b>.  If <b>buf</b> holds no data, return 0.
  */
 uint32_t
 buf_get_oldest_chunk_timestamp(const buf_t *buf, uint32_t now)
 {
-  if (buf->head) {
-    return now - buf->head->inserted_time;
-  } else {
+  const chunk_t *ch;
+
+  if (buf->datalen == 0)
     return 0;
-  }
+
+  /* Skip any empty chunks at the front of the buffer: they hold no data, so
+   * their age doesn't matter. */
+  ch = buf->head;
+  while (ch && ch->datalen == 0)
+    ch = ch->next;
+
+  if (BUG(!ch))
+    return 0;
+
+  return now - ch->inserted_time;
 }
 
 size_t

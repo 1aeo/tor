@@ -571,6 +571,81 @@ test_buffer_time_tracking(void *arg)
   monotime_disable_test_mocking();
 }
 
+/* A buffer can have empty chunks at its front.  Make sure that
+ * buf_get_oldest_chunk_timestamp() only counts the chunks that hold data. */
+static void
+test_buffer_time_tracking_empty_chunks(void *arg)
+{
+  buf_t *buf=NULL, *buf2=NULL;
+  const time_t START = 1389288246;
+  const uint64_t START_NSEC = ((uint64_t)START) * 1000000000;
+  size_t cap;
+  char tmp[4096];
+  (void)arg;
+
+  crypto_rand(tmp, sizeof(tmp));
+
+  monotime_enable_test_mocking();
+
+  buf = buf_new();
+  tt_assert(buf);
+
+  monotime_coarse_set_mock_time_nsec(START_NSEC);
+  const uint32_t START_TS = monotime_coarse_get_stamp();
+
+  /* Fill the first chunk exactly. */
+  buf_add(buf, tmp, 1);
+  tt_assert(buf->head);
+  cap = buf->head->memlen;
+  tt_uint_op(cap, OP_LE, sizeof(tmp));
+  buf_add(buf, tmp, cap - 1);
+  tt_uint_op(buf_datalen(buf), OP_EQ, cap);
+  tt_uint_op(buf_slack(buf), OP_EQ, 0);
+
+  /* Add an empty chunk after it, as buf_read_from_fd() and
+   * buf_read_from_tls() do when one read fills the tail chunk exactly and
+   * the next read would block. */
+  monotime_coarse_set_mock_time_nsec(START_NSEC + 100 * (uint64_t)1000000);
+  const uint32_t TS2 = monotime_coarse_get_stamp();
+  buf_add_chunk_with_capacity(buf, cap, 1);
+  tt_ptr_op(buf->head->next, OP_EQ, buf->tail);
+  tt_uint_op(buf->tail->datalen, OP_EQ, 0);
+
+  /* All the data is in the first chunk, so that is the one that counts. */
+  tt_int_op(1000, OP_EQ, buf_get_oldest_chunk_timestamp(buf, START_TS+1000));
+
+  /* Taking all the data frees the first chunk, but not the empty one. */
+  tt_int_op(0, OP_EQ, buf_get_bytes(buf, tmp, cap));
+  buf_assert_ok(buf);
+  tt_assert(buf->head);
+  tt_ptr_op(buf->head, OP_EQ, buf->tail);
+
+  /* A buffer with no data has age 0, however old its empty chunk is. */
+  tt_int_op(0, OP_EQ, buf_get_oldest_chunk_timestamp(buf, TS2));
+  tt_int_op(0, OP_EQ, buf_get_oldest_chunk_timestamp(buf, TS2+1000));
+
+  /* Append newer data in a new chunk, as buf_move_all() does when we move
+   * data between linked connections.  The empty chunk stays in front, but
+   * only the chunk with the data counts. */
+  monotime_coarse_set_mock_time_nsec(START_NSEC + 5617 * (uint64_t)1000000);
+  const uint32_t TS3 = monotime_coarse_get_stamp();
+  buf2 = buf_new();
+  buf_add(buf2, "ABCDEFG", 7);
+  tt_uint_op(7, OP_EQ, buf_move_all(buf, buf2));
+  buf_assert_ok(buf);
+  tt_uint_op(buf->head->datalen, OP_EQ, 0);
+  tt_ptr_op(buf->head->next, OP_EQ, buf->tail);
+  tt_uint_op(buf->tail->datalen, OP_EQ, 7);
+
+  tt_int_op(0, OP_EQ, buf_get_oldest_chunk_timestamp(buf, TS3));
+  tt_int_op(383, OP_EQ, buf_get_oldest_chunk_timestamp(buf, TS3+383));
+
+ done:
+  buf_free(buf);
+  buf_free(buf2);
+  monotime_disable_test_mocking();
+}
+
 static void
 test_buffers_compress_fin_at_chunk_end_impl(compress_method_t method,
                                             compression_level_t level)
@@ -867,6 +942,8 @@ struct testcase_t buffer_tests[] = {
   { "allocation_tracking", test_buffer_allocation_tracking, TT_FORK,
     NULL, NULL },
   { "time_tracking", test_buffer_time_tracking, TT_FORK, NULL, NULL },
+  { "time_tracking_empty_chunks", test_buffer_time_tracking_empty_chunks,
+    TT_FORK, NULL, NULL },
   { "tls_read_mocked", test_buffers_tls_read_mocked, 0,
     NULL, NULL },
   { "chunk_size", test_buffers_chunk_size, 0, NULL, NULL },
