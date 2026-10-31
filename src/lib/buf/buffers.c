@@ -59,8 +59,12 @@
  * the head of the list, and added at the tail.  The list is singly linked,
  * and the buffer keeps a pointer to the head and the tail.
  *
- * Every chunk, except the tail, contains at least one byte of data.  Data in
- * each chunk is contiguous.
+ * Every chunk, except the tail, is supposed to contain at least one byte of
+ * data, but nothing enforces this: a read that allocates a new tail chunk
+ * and then gets nothing leaves it empty, and buf_move_all() can then append
+ * more chunks after it.  Code that walks the chunks must skip empty chunks,
+ * not treat them as the end of the data (see bug 41377).  Data in each chunk
+ * is contiguous.
  *
  * When you need to treat the first N characters on a buffer as a contiguous
  * string, use the buf_pullup function to make them so.  Don't do this more
@@ -766,14 +770,28 @@ buf_find_pos_of_char(char ch, buf_pos_t *out)
   return -1;
 }
 
-/** Advance <b>pos</b> by a single character, if there are any more characters
- * in the buffer.  Returns 0 on success, -1 on failure. */
+/** Advance <b>pos</b> by one real byte, if the buffer has more data.
+ * Return 0 on success, or -1 if <b>pos</b> is already at the end.
+ *
+ * Empty chunks hold no bytes.  A short read can leave an empty tail, and
+ * buf_move_all() can append further chunks after that tail, so an empty
+ * chunk may sit in the middle.  Skip those chunks.  Stopping at the first
+ * empty chunk (as in 2a9408f0a21b) hid a later match.  See bug 41377.
+ *
+ * On success, <b>pos</b> refers to a byte inside some chunk's datalen.
+ * A second call at the end of the buffer returns -1 again and does not
+ * read past that chunk.
+ */
 static inline int
 buf_pos_inc(buf_pos_t *pos)
 {
+  tor_assert(pos->chunk);
   tor_assert(pos->pos < BUF_MAX_LEN);
-  ++pos->pos;
-  if (pos->pos == (ptrdiff_t)pos->chunk->datalen) {
+  /* Already at the end of this chunk, including an empty one at pos 0:
+   * do not step to pos 1, or the end test can never succeed again. */
+  if (pos->pos < (ptrdiff_t)pos->chunk->datalen)
+    ++pos->pos;
+  while (pos->pos >= (ptrdiff_t)pos->chunk->datalen) {
     if (!pos->chunk->next)
       return -1;
     pos->chunk_pos += pos->chunk->datalen;
@@ -795,7 +813,14 @@ buf_matches_at_pos(const buf_pos_t *pos, const char *s, size_t n)
   memcpy(&p, pos, sizeof(p));
 
   while (1) {
-    char ch = p.chunk->data[p.pos];
+    char ch;
+
+    /* buf_pos_inc() never leaves p outside this chunk's data.  If it
+     * does, do not compare against slack or a following empty chunk. */
+    IF_BUG_ONCE(p.pos >= (ptrdiff_t)p.chunk->datalen) {
+      return 0;
+    }
+    ch = p.chunk->data[p.pos];
     if (ch != *s)
       return 0;
     ++s;
@@ -810,11 +835,15 @@ buf_matches_at_pos(const buf_pos_t *pos, const char *s, size_t n)
 }
 
 /** Return the first position in <b>buf</b> at which the <b>n</b>-character
- * string <b>s</b> occurs, or -1 if it does not occur. */
+ * string <b>s</b> occurs, or -1 if it does not occur.  A needle longer
+ * than the buffer cannot match. */
 int
 buf_find_string_offset(const buf_t *buf, const char *s, size_t n)
 {
   buf_pos_t pos;
+
+  if (n > buf->datalen)
+    return -1;
   buf_pos_init(buf, &pos);
   while (buf_find_pos_of_char(*s, &pos) >= 0) {
     if (buf_matches_at_pos(&pos, s, n)) {

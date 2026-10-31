@@ -1,0 +1,7 @@
+  o Minor bugfixes (buffers):
+    - When scanning a buffer for a string, such as the end of an HTTP
+      header, skip chunks that contain no data instead of comparing
+      against bytes past the end of a chunk. Previously a buffer ending
+      in a partial CRLF at a chunk boundary could be treated as a
+      finished header and rejected, and a delimiter split by an empty
+      chunk could be missed. Fixes bug 41377; bugfix on 0.2.0.16-alpha.

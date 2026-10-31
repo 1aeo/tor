@@ -13,7 +13,17 @@
 #include "lib/crypt_ops/crypto_rand.h"
 #include "core/proto/proto_http.h"
 #include "core/proto/proto_socks.h"
+#include "lib/net/buffers_net.h"
+#include "lib/string/util_string.h"
 #include "test/test.h"
+
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>
+#endif
+#ifdef _WIN32
+#include <io.h>
+#endif
+#include <fcntl.h>
 
 /** Run unit tests for buffers.c */
 static void
@@ -858,6 +868,570 @@ test_buffer_peek_startswith(void *arg)
   buf_free(buf);
 }
 
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define BUFFERS_TEST_ASAN 1
+#  endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) && !defined(BUFFERS_TEST_ASAN)
+#  define BUFFERS_TEST_ASAN 1
+#endif
+
+/** Printed by the ASan death callback.  One report kills the process, so
+ * the note has to already say which seed or case was running. */
+static char buf_search_death_note[80];
+
+#ifdef BUFFERS_TEST_ASAN
+static void buf_search_asan_death(void);
+void __asan_poison_memory_region(void const volatile *addr, size_t size);
+void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+void __asan_set_death_callback(void (*callback)(void));
+
+static void
+buf_search_asan_death(void)
+{
+  if (buf_search_death_note[0])
+    fprintf(stderr, "buffer search death: %s\n", buf_search_death_note);
+}
+#endif
+
+static void
+buf_search_arm_death(const char *note)
+{
+  buf_search_death_note[0] = '\0';
+  if (note)
+    tor_snprintf(buf_search_death_note, sizeof(buf_search_death_note),
+                 "%s", note);
+#ifdef BUFFERS_TEST_ASAN
+  __asan_set_death_callback(buf_search_asan_death);
+#endif
+}
+
+static void
+buf_search_poison(void *addr, size_t n)
+{
+#ifdef BUFFERS_TEST_ASAN
+  if (addr && n)
+    __asan_poison_memory_region(addr, n);
+#else
+  (void)addr;
+  (void)n;
+#endif
+}
+
+static void
+buf_search_unpoison_buf(buf_t *buf)
+{
+  chunk_t *chunk;
+
+  if (!buf)
+    return;
+#ifdef BUFFERS_TEST_ASAN
+  for (chunk = buf->head; chunk; chunk = chunk->next)
+    __asan_unpoison_memory_region(chunk->mem, chunk->memlen);
+#else
+  (void)chunk;
+#endif
+}
+
+/** Append a chunk.  <b>n</b> bytes are real data; the rest of the chunk is
+ * filled with <b>poison</b> and, under ASan, marked inaccessible. */
+static chunk_t *
+buf_push_chunk(buf_t *buf, const char *bytes, size_t n, int poison)
+{
+  chunk_t *chunk;
+  size_t slack, alloc;
+
+  /* malloc size, not payload size.  Overhead is well under 128 bytes. */
+  alloc = 256;
+  if (n + 128 > alloc)
+    alloc = n + 128;
+  buf->default_chunk_size = alloc;
+  chunk = buf_add_chunk_with_capacity(buf, 1, 1);
+  tor_assert(chunk);
+  tor_assert(n <= chunk->memlen);
+  if (n) {
+    tor_assert(bytes);
+    memcpy(chunk->data, bytes, n);
+    chunk->datalen = n;
+    buf->datalen += n;
+  }
+  slack = CHUNK_REMAINING_CAPACITY(chunk);
+  if (slack) {
+    memset(CHUNK_WRITE_PTR(chunk), poison, slack);
+    buf_search_poison(CHUNK_WRITE_PTR(chunk), slack);
+  }
+  return chunk;
+}
+
+/** Return 0 when the search matches <b>expect</b>.  The caller asserts. */
+static int
+buf_search_check(buf_t *buf, const char *needle, size_t needle_len,
+                 int expect)
+{
+  int got = buf_find_string_offset(buf, needle, needle_len);
+
+  if (got != expect) {
+    fprintf(stderr, "buffer search mismatch (%s): got %d, expect %d\n",
+            buf_search_death_note, got, expect);
+    return -1;
+  }
+  return 0;
+}
+
+/** Partial CRLF at a chunk boundary, then an empty chunk whose slack
+ * completes the delimiter.  Also a real delimiter with an empty tail
+ * after it. */
+static void
+test_buffers_find_string_empty_tail(void *arg)
+{
+  buf_t *buf = NULL;
+  chunk_t *empty;
+  char body[223];
+  char *headers = NULL, *body_out = NULL;
+  size_t body_used = 0;
+  int rv;
+
+  (void)arg;
+  buf_search_arm_death("empty-tail partial CRLF");
+
+  memset(body, 'x', sizeof(body));
+  memcpy(body + 220, "\r\n\r", 3);
+  buf = buf_new();
+  tt_int_op(buf_add(buf, body, sizeof(body)), OP_GT, 0);
+  empty = buf_add_chunk_with_capacity(buf, 64, 1);
+  tt_ptr_op(empty, OP_NE, NULL);
+  tt_uint_op(empty->datalen, OP_EQ, 0);
+  memset(empty->mem, '\n', empty->memlen);
+  buf_search_poison(empty->mem, empty->memlen);
+  buf_assert_ok(buf);
+
+  /* Unpatched code false-matches at offset 220. */
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, -1), OP_EQ, 0);
+  rv = fetch_from_buf_http(buf, &headers, 8192,
+                           &body_out, &body_used, 8192, 0);
+  tt_int_op(rv, OP_EQ, 0);
+  tt_ptr_op(headers, OP_EQ, NULL);
+
+  buf_search_unpoison_buf(buf);
+  tt_int_op(buf_add(buf, "\n", 1), OP_GT, 0);
+  rv = fetch_from_buf_http(buf, &headers, 8192,
+                           &body_out, &body_used, 8192, 0);
+  tt_int_op(rv, OP_EQ, 1);
+  tt_ptr_op(headers, OP_NE, NULL);
+  tt_int_op(strcmp(headers + 220, "\r\n\r\n"), OP_EQ, 0);
+  tor_free(headers);
+  tor_free(body_out);
+  buf_free(buf);
+
+  /* A finished delimiter must still win when an empty tail follows. */
+  buf_search_arm_death("empty-tail real delimiter");
+  buf = buf_new();
+  tt_int_op(buf_add(buf, "GET / HTTP/1.0\r\n\r\n", 18), OP_GT, 0);
+  empty = buf_add_chunk_with_capacity(buf, 64, 1);
+  memset(empty->mem, 'X', empty->memlen);
+  buf_search_poison(empty->mem, empty->memlen);
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, 14), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  rv = fetch_from_buf_http(buf, &headers, 8192,
+                           &body_out, &body_used, 8192, 0);
+  tt_int_op(rv, OP_EQ, 1);
+  tt_str_op(headers, OP_EQ, "GET / HTTP/1.0\r\n\r\n");
+
+ done:
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  tor_free(headers);
+  tor_free(body_out);
+}
+
+/** Holes created the way buf_move_all() creates them. */
+static void
+test_buffers_find_string_empty_interior(void *arg)
+{
+  buf_t *buf = NULL;
+  char *headers = NULL, *body_out = NULL;
+  const char *head = "GET / HTTP/1.0\r\nHost: a\r";
+  const char *rest = "\nX-Final: yup\r\n\r\n";
+  const char *left = "GET / HTTP/1.0\r\n\r";
+  size_t body_used = 0;
+  int expect, rv;
+
+  (void)arg;
+  buf_search_arm_death("interior delimiter after hole");
+
+  buf = buf_new();
+  buf_push_chunk(buf, head, strlen(head), 'X');
+  buf_push_chunk(buf, NULL, 0, 'X');
+  buf_push_chunk(buf, rest, strlen(rest), 'X');
+  buf_assert_ok(buf);
+  expect = (int)(strlen(head) + strlen(rest) - 4);
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, expect), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  buf = NULL;
+
+  /* The delimiter itself straddles the hole.  Poison is not the real
+   * next byte, so unpatched code misses it and 2a9408f0a21b stops. */
+  buf_search_arm_death("interior straddling delimiter");
+  buf = buf_new();
+  buf_push_chunk(buf, left, strlen(left), 'X');
+  buf_push_chunk(buf, NULL, 0, 'X');
+  buf_push_chunk(buf, "\n", 1, 'X');
+  buf_assert_ok(buf);
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, (int)strlen(left) - 3),
+            OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  rv = fetch_from_buf_http(buf, &headers, 8192,
+                           &body_out, &body_used, 8192, 0);
+  tt_int_op(rv, OP_EQ, 1);
+  tt_str_op(headers, OP_EQ, "GET / HTTP/1.0\r\n\r\n");
+  tor_free(headers);
+  tor_free(body_out);
+  buf_free(buf);
+  buf = NULL;
+
+  buf_search_arm_death("consecutive empty chunks");
+  buf = buf_new();
+  buf_push_chunk(buf, head, strlen(head), 'Q');
+  buf_push_chunk(buf, NULL, 0, 'Q');
+  buf_push_chunk(buf, NULL, 0, 'Q');
+  buf_push_chunk(buf, rest, strlen(rest), 'Q');
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, expect), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  buf = NULL;
+
+  buf_search_arm_death("leading empty chunk");
+  buf = buf_new();
+  buf_push_chunk(buf, NULL, 0, '\n');
+  buf_push_chunk(buf, "OK\r\n\r\n", 6, '\n');
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, 2), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  buf = NULL;
+
+  buf_search_arm_death("all empty chunks");
+  buf = buf_new();
+  buf_push_chunk(buf, NULL, 0, '\n');
+  buf_push_chunk(buf, NULL, 0, '\n');
+  tt_uint_op(buf_datalen(buf), OP_EQ, 0);
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, -1), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+
+  /* Two nonempty chunks.  The old one-byte tests never cross a chunk. */
+  buf_search_arm_death("split across two nonempty chunks");
+  buf = buf_new();
+  buf->default_chunk_size = 256;
+  {
+    chunk_t *full = buf_add_chunk_with_capacity(buf, 1, 1);
+    size_t n = full->memlen;
+    char *block = tor_malloc(n);
+
+    memset(block, 'x', n);
+    memcpy(block + n - 3, "\r\n\r", 3);
+    memcpy(full->data, block, n);
+    full->datalen = n;
+    buf->datalen = n;
+    buf_push_chunk(buf, "\nZZ", 3, 'x');
+    tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, (int)n - 3),
+              OP_EQ, 0);
+    tor_free(block);
+  }
+
+ done:
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  tor_free(headers);
+  tor_free(body_out);
+}
+
+/** Long needles.  The length check must not be what makes a real split
+ * succeed, and a too-long needle must not be completed from slack. */
+static void
+test_buffers_find_string_long_needle(void *arg)
+{
+  buf_t *buf = NULL;
+  chunk_t *data, *hole;
+  char *logical = NULL, *needle = NULL;
+  size_t stale, real_part, needle_len, data_len, start, i;
+
+  (void)arg;
+  buf_search_arm_death("long needle completed from an empty chunk");
+
+  buf = buf_new();
+  tt_int_op(buf_add(buf, "x", 1), OP_GT, 0);
+  data = buf->head;
+  buf->default_chunk_size = 256;
+  hole = buf_add_chunk_with_capacity(buf, 1, 1);
+  tt_uint_op(hole->datalen, OP_EQ, 0);
+  stale = hole->memlen;
+  real_part = 32;
+  needle_len = real_part + stale;
+  data_len = needle_len + 16;
+  tt_uint_op(data_len, OP_LE, data->memlen);
+  start = data_len - real_part;
+  needle = tor_malloc(needle_len);
+  memset(needle, 'Q', real_part);
+  memset(needle + real_part, 'R', stale);
+  memset(data->mem, 'x', data_len);
+  memcpy(data->mem + start, needle, real_part);
+  data->datalen = data_len;
+  buf->datalen = data_len;
+  memcpy(hole->mem, needle + real_part, stale);
+  buf_search_poison(hole->mem, stale);
+  /* n <= datalen, so the early length check does not decide this. */
+  tt_uint_op(needle_len, OP_LE, buf_datalen(buf));
+  tt_int_op(buf_search_check(buf, needle, needle_len, -1), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  buf = NULL;
+  tor_free(needle);
+
+  /* 420 real bytes, split by a hole.  Both old walkers miss it. */
+  buf_search_arm_death("420 real bytes split by an empty chunk");
+  logical = tor_malloc_zero(420);
+  memset(logical, 'a', 420);
+  buf = buf_new();
+  buf_push_chunk(buf, logical, 200, 'B');
+  buf_push_chunk(buf, NULL, 0, 'B');
+  buf_push_chunk(buf, logical + 200, 220, 'B');
+  tt_uint_op(buf_datalen(buf), OP_EQ, 420);
+  tt_int_op(buf_search_check(buf, logical, 420, 0), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  buf = NULL;
+
+  /* Longer than the buffer.  The empty chunk's first byte would
+   * complete the needle, which is the unpatched false match. */
+  buf_search_arm_death("needle longer than the buffer");
+  buf = buf_new();
+  buf_push_chunk(buf, NULL, 0, 'Z');
+  buf_push_chunk(buf, "hello", 5, 'Z');
+  buf_push_chunk(buf, NULL, 0, '!');
+  tt_int_op(buf_search_check(buf, "hello!", 6, -1), OP_EQ, 0);
+
+  /* Same shape, but the slack is not a continuation.  Every walker
+   * returns -1; this only checks the length check is harmless. */
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  buf = buf_new();
+  buf_search_arm_death("leading empty, needle longer, no false match");
+  for (i = 0; i < 3; i++)
+    buf_push_chunk(buf, NULL, 0, 'Z');
+  buf_push_chunk(buf, "hello", 5, 'Z');
+  tt_int_op(buf_search_check(buf, "hello!", 6, -1), OP_EQ, 0);
+
+ done:
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+  tor_free(logical);
+  tor_free(needle);
+}
+
+static uint32_t
+buf_search_rng(uint32_t *state)
+{
+  *state = *state * 1664525u + 1013904223u;
+  return *state;
+}
+
+/** Compare the walker with a flat search.  Non-data bytes are CR, LF,
+ * 'a', and 'b', which are the bytes a false match would need. */
+static void
+test_buffers_find_string_random(void *arg)
+{
+  buf_t *buf = NULL;
+  char logical[180];
+  char needle[16];
+  const char poisons[] = "\r\nab";
+  uint32_t state = 41377;
+  int iter;
+
+  (void)arg;
+  buf_search_arm_death("random seed 41377");
+
+  for (iter = 0; iter < 4096; iter++) {
+    uint32_t iter_seed = state;
+    size_t logical_len = 1 + (buf_search_rng(&state) % 160);
+    size_t off = 0;
+    size_t nlen;
+    const char *flat;
+    int expect, got;
+
+    tor_snprintf(buf_search_death_note, sizeof(buf_search_death_note),
+                 "random seed %lu", (unsigned long)iter_seed);
+    memset(logical, 'x', logical_len);
+    if (logical_len >= 4) {
+      size_t at = buf_search_rng(&state) % (logical_len - 3);
+      memcpy(logical + at, "\r\n\r\n", 4);
+    }
+
+    buf = buf_new();
+    while (off < logical_len) {
+      size_t take = 1 + (buf_search_rng(&state) % 24);
+      int poison = poisons[buf_search_rng(&state) % 4];
+
+      if ((buf_search_rng(&state) % 5) == 0)
+        buf_push_chunk(buf, NULL, 0, poison);
+      if (take > logical_len - off)
+        take = logical_len - off;
+      buf_push_chunk(buf, logical + off, take, poison);
+      off += take;
+    }
+    if ((buf_search_rng(&state) % 3) == 0)
+      buf_push_chunk(buf, NULL, 0, poisons[0]);
+    buf_assert_ok(buf);
+    tt_uint_op(buf_datalen(buf), OP_EQ, logical_len);
+
+    flat = tor_memmem(logical, logical_len, "\r\n\r\n", 4);
+    expect = flat ? (int)(flat - logical) : -1;
+    got = buf_find_string_offset(buf, "\r\n\r\n", 4);
+    if (got != expect) {
+      fprintf(stderr, "%s: CRLF got %d expect %d\n",
+              buf_search_death_note, got, expect);
+      tt_int_op(got, OP_EQ, expect);
+    }
+
+    nlen = 1 + (buf_search_rng(&state) % 8);
+    if (nlen > logical_len)
+      nlen = logical_len;
+    memcpy(needle, logical, nlen);
+    flat = tor_memmem(logical, logical_len, needle, nlen);
+    expect = flat ? (int)(flat - logical) : -1;
+    got = buf_find_string_offset(buf, needle, nlen);
+    if (got != expect) {
+      fprintf(stderr, "%s: prefix got %d expect %d\n",
+              buf_search_death_note, got, expect);
+      tt_int_op(got, OP_EQ, expect);
+    }
+
+    /* One byte past the buffer.  Slack is CR/LF/a/b, not 'Z'. */
+    {
+      char too_long[161];
+
+      memset(too_long, 'Z', logical_len + 1);
+      tt_int_op(buf_find_string_offset(buf, too_long, logical_len + 1),
+                OP_EQ, -1);
+    }
+
+    buf_search_unpoison_buf(buf);
+    buf_free(buf);
+    buf = NULL;
+  }
+
+ done:
+  buf_search_unpoison_buf(buf);
+  buf_free(buf);
+}
+
+/** A full chunk plus buf_read_from_pipe(/dev/null) is the DirPort shape. */
+static int
+buf_open_null(void)
+{
+#ifdef _WIN32
+  return open("NUL", O_RDONLY);
+#else
+  return open("/dev/null", O_RDONLY);
+#endif
+}
+
+static void
+buf_fill_one_chunk(buf_t *buf, const char *suffix)
+{
+  chunk_t *chunk;
+  size_t n, suffix_len;
+
+  buf->default_chunk_size = 256;
+  chunk = buf_add_chunk_with_capacity(buf, 1, 1);
+  tor_assert(chunk);
+  n = chunk->memlen;
+  suffix_len = strlen(suffix);
+  tor_assert(n > suffix_len);
+  memset(chunk->mem, 'x', n);
+  memcpy(chunk->mem + n - suffix_len, suffix, suffix_len);
+  chunk->datalen = n;
+  buf->datalen += n;
+}
+
+static void
+test_buffers_find_string_pipe(void *arg)
+{
+  buf_t *buf = NULL, *more = NULL;
+  char *headers = NULL, *body_out = NULL;
+  size_t body_used = 0, head_len;
+  int fd = -1, eof = 0, sockerr = 0, rv, expect;
+
+  (void)arg;
+  buf_search_arm_death("pipe empty tail");
+  buf = buf_new();
+  buf_fill_one_chunk(buf, "\r\n\r");
+  fd = buf_open_null();
+  tt_int_op(fd, OP_GE, 0);
+  rv = buf_read_from_pipe(buf, fd, 512, &eof, &sockerr);
+  tt_int_op(rv, OP_EQ, 0);
+  tt_int_op(eof, OP_EQ, 1);
+  tt_ptr_op(buf->tail, OP_NE, buf->head);
+  tt_uint_op(buf->tail->datalen, OP_EQ, 0);
+  memset(buf->tail->mem, '\n', buf->tail->memlen);
+  buf_search_poison(buf->tail->mem, buf->tail->memlen);
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, -1), OP_EQ, 0);
+  rv = fetch_from_buf_http(buf, &headers, 8192,
+                           &body_out, &body_used, 8192, 0);
+  tt_int_op(rv, OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  tt_int_op(buf_add(buf, "\n", 1), OP_GT, 0);
+  rv = fetch_from_buf_http(buf, &headers, 8192,
+                           &body_out, &body_used, 8192, 0);
+  tt_int_op(rv, OP_EQ, 1);
+  tt_ptr_op(headers, OP_NE, NULL);
+  tor_free(headers);
+  tor_free(body_out);
+  close(fd);
+  fd = -1;
+  buf_free(buf);
+  buf = NULL;
+
+  /* Empty tail, then more bytes.  The delimiter is only in the part
+   * appended by buf_move_all(). */
+  buf_search_arm_death("pipe then move_all");
+  buf = buf_new();
+  buf_fill_one_chunk(buf, "ab\r");
+  fd = buf_open_null();
+  tt_int_op(fd, OP_GE, 0);
+  eof = 0;
+  rv = buf_read_from_pipe(buf, fd, 512, &eof, &sockerr);
+  tt_int_op(rv, OP_EQ, 0);
+  tt_uint_op(buf->tail->datalen, OP_EQ, 0);
+  memset(buf->tail->mem, 'X', buf->tail->memlen);
+  buf_search_poison(buf->tail->mem, buf->tail->memlen);
+  more = buf_new();
+  tt_int_op(buf_add(more, "\nX-Final: yup\r\n\r\n", 17), OP_GT, 0);
+  head_len = buf->head->datalen;
+  buf_move_all(buf, more);
+  tt_uint_op(buf->head->next->datalen, OP_EQ, 0);
+  expect = (int)(head_len + 17 - 4);
+  buf_search_unpoison_buf(buf);
+  /* Re-poison only the hole so the search still runs under ASan. */
+  buf_search_poison(buf->head->next->mem, buf->head->next->memlen);
+  tt_int_op(buf_search_check(buf, "\r\n\r\n", 4, expect), OP_EQ, 0);
+  buf_search_unpoison_buf(buf);
+  rv = fetch_from_buf_http(buf, &headers, 8192,
+                           &body_out, &body_used, 8192, 0);
+  tt_int_op(rv, OP_EQ, 1);
+
+ done:
+  if (fd >= 0)
+    close(fd);
+  buf_search_unpoison_buf(buf);
+  buf_search_unpoison_buf(more);
+  buf_free(buf);
+  buf_free(more);
+  tor_free(headers);
+  tor_free(body_out);
+}
+
 struct testcase_t buffer_tests[] = {
   { "basic", test_buffers_basic, TT_FORK, NULL, NULL },
   { "copy", test_buffer_copy, TT_FORK, NULL, NULL },
@@ -871,6 +1445,15 @@ struct testcase_t buffer_tests[] = {
     NULL, NULL },
   { "chunk_size", test_buffers_chunk_size, 0, NULL, NULL },
   { "find_contentlen", test_buffers_find_contentlen, 0, NULL, NULL },
+  { "find_string_empty_tail", test_buffers_find_string_empty_tail,
+    TT_FORK, NULL, NULL },
+  { "find_string_empty_interior", test_buffers_find_string_empty_interior,
+    TT_FORK, NULL, NULL },
+  { "find_string_long_needle", test_buffers_find_string_long_needle,
+    TT_FORK, NULL, NULL },
+  { "find_string_random", test_buffers_find_string_random,
+    TT_FORK, NULL, NULL },
+  { "find_string_pipe", test_buffers_find_string_pipe, TT_FORK, NULL, NULL },
 
   { "compress/zlib", test_buffers_compress, TT_FORK,
     &passthrough_setup, (char*)"deflate" },
