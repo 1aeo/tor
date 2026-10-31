@@ -546,8 +546,8 @@ tor_tls_read, (tor_tls_t *tls, char *cp, size_t len))
   }
 }
 
-int
-tor_tls_write(tor_tls_t *tls, const char *cp, size_t n)
+MOCK_IMPL(int,
+tor_tls_write, (tor_tls_t *tls, const char *cp, size_t n))
 {
   tor_assert(tls);
   tor_assert(cp || n == 0);
@@ -604,8 +604,8 @@ tor_tls_get_pending_bytes,(tor_tls_t *tls))
   return (int)n;
 }
 
-size_t
-tor_tls_get_forced_write_size(tor_tls_t *tls)
+MOCK_IMPL(size_t,
+tor_tls_get_forced_write_size, (tor_tls_t *tls))
 {
   tor_assert(tls);
   /* NSS doesn't have the same "forced write" restriction as openssl. */

@@ -59,8 +59,15 @@
  * the head of the list, and added at the tail.  The list is singly linked,
  * and the buffer keeps a pointer to the head and the tail.
  *
- * Every chunk, except the tail, contains at least one byte of data.  Data in
- * each chunk is contiguous.
+ * Data in each chunk is contiguous.  Most chunks hold at least one byte of
+ * data, but any chunk can be empty, including the head: a read or a
+ * compression call can leave an empty chunk at the tail, and buf_move_all()
+ * can then add more chunks after it.  (buf_move_all() doesn't remove empty
+ * chunks, since in a singly linked list that would mean walking the chunks,
+ * and it needs to stay O(1).)  So code that walks the chunks of a buffer must
+ * handle empty ones, and code that writes out data from buf->head should call
+ * buf_drop_empty_head_chunks() first.  buf_assert_ok() accepts empty chunks
+ * anywhere.
  *
  * When you need to treat the first N characters on a buffer as a contiguous
  * string, use the buf_pullup function to make them so.  Don't do this more
@@ -346,6 +353,23 @@ buf_drain(buf_t *buf, size_t n)
         buf->tail = NULL;
       buf_chunk_free_unchecked(victim);
     }
+  }
+  check();
+}
+
+/** Free any empty chunks at the head of <b>buf</b>, other than the tail.
+ *
+ * Call this before writing out data from buf->head, since buf->head can be
+ * empty even when there is more data after it: see the implementation notes
+ * at the top of this file.  Afterwards, buf->head holds data unless <b>buf</b>
+ * is empty. */
+void
+buf_drop_empty_head_chunks(buf_t *buf)
+{
+  while (buf->head && buf->head != buf->tail && buf->head->datalen == 0) {
+    chunk_t *victim = buf->head;
+    buf->head = victim->next;
+    buf_chunk_free_unchecked(victim);
   }
   check();
 }
@@ -686,6 +710,9 @@ buf_move_to_buf(buf_t *buf_out, buf_t *buf_in, size_t *buf_flushlen)
 
 /** Moves all data from <b>buf_in</b> to <b>buf_out</b>, without copying.
  * Return the number of bytes that were moved.
+ *
+ * This can leave empty chunks in the middle of <b>buf_out</b>: see the
+ * implementation notes at the top of this file.
  */
 size_t
 buf_move_all(buf_t *buf_out, buf_t *buf_in)

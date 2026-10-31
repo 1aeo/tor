@@ -97,10 +97,10 @@ int tor_tls_peer_has_cert(tor_tls_t *tls);
 MOCK_DECL(struct tor_x509_cert_t *,tor_tls_get_peer_cert,(tor_tls_t *tls));
 MOCK_DECL(struct tor_x509_cert_t *,tor_tls_get_own_cert,(tor_tls_t *tls));
 MOCK_DECL(int, tor_tls_read, (tor_tls_t *tls, char *cp, size_t len));
-int tor_tls_write(tor_tls_t *tls, const char *cp, size_t n);
+MOCK_DECL(int, tor_tls_write, (tor_tls_t *tls, const char *cp, size_t n));
 MOCK_DECL(int, tor_tls_handshake, (tor_tls_t *tls));
 MOCK_DECL(int, tor_tls_get_pending_bytes, (tor_tls_t *tls));
-size_t tor_tls_get_forced_write_size(tor_tls_t *tls);
+MOCK_DECL(size_t, tor_tls_get_forced_write_size, (tor_tls_t *tls));
 
 void tor_tls_get_n_raw_bytes(tor_tls_t *tls,
                              size_t *n_read, size_t *n_written);

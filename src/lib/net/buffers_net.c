@@ -195,6 +195,8 @@ buf_flush_to_fd(buf_t *buf, int fd, size_t sz,
   check();
   while (sz) {
     size_t flushlen0;
+    /* An empty head chunk would make us write nothing, and stop. */
+    buf_drop_empty_head_chunks(buf);
     tor_assert(buf->head);
     if (buf->head->datalen >= sz)
       flushlen0 = sz;

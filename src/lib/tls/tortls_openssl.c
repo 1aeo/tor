@@ -822,8 +822,8 @@ STATIC uint64_t total_bytes_written_by_tls = 0;
  * number of characters written.  On failure, returns TOR_TLS_ERROR,
  * TOR_TLS_WANTREAD, or TOR_TLS_WANTWRITE.
  */
-int
-tor_tls_write(tor_tls_t *tls, const char *cp, size_t n)
+MOCK_IMPL(int,
+tor_tls_write,(tor_tls_t *tls, const char *cp, size_t n))
 {
   int r, err;
   tor_assert(tls);
@@ -952,8 +952,8 @@ tor_tls_get_pending_bytes,(tor_tls_t *tls))
 
 /** If <b>tls</b> requires that the next write be of a particular size,
  * return that size.  Otherwise, return 0. */
-size_t
-tor_tls_get_forced_write_size(tor_tls_t *tls)
+MOCK_IMPL(size_t,
+tor_tls_get_forced_write_size,(tor_tls_t *tls))
 {
   return tls->wantwrite_n;
 }

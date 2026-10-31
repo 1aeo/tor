@@ -151,6 +151,8 @@ buf_flush_to_tls(buf_t *buf, tor_tls_t *tls, size_t flushlen)
 
   do {
     size_t flushlen0;
+    /* An empty head chunk would make us write nothing, and stop. */
+    buf_drop_empty_head_chunks(buf);
     if (buf->head) {
       if ((ssize_t)buf->head->datalen >= sz)
         flushlen0 = sz;

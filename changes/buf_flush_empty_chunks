@@ -1,0 +1,8 @@
+  o Minor bugfixes (buffers):
+    - When flushing a buffer to a socket, a pipe, or a TLS connection, skip
+      past any empty chunks at the start of the buffer. Previously, an empty
+      chunk ahead of the data would make us write nothing and stop, leaving
+      the rest of the data stuck in the buffer for good. Such a chunk can
+      appear when buf_move_all() adds data after an empty chunk at the end
+      of a buffer, though we don't know of a way to make this happen to a
+      buffer that Tor flushes. Bugfix on 0.3.3.1-alpha.

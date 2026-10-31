@@ -7,6 +7,7 @@
 #define PROTO_HTTP_PRIVATE
 #include "core/or/or.h"
 #include "lib/buf/buffers.h"
+#include "lib/net/buffers_net.h"
 #include "lib/tls/buffers_tls.h"
 #include "lib/tls/tortls.h"
 #include "lib/compress/compress.h"
@@ -768,6 +769,204 @@ test_buffers_tls_read_mocked(void *arg)
   buf_free(buf);
 }
 
+/* Helper for the flush_empty_chunks tests: return a new buffer with one chunk
+ * for each string in the NULL-terminated array <b>chunks</b>, in order.  An
+ * empty string makes an empty chunk.
+ *
+ * Real buffers can end up like this: a read or a compression call can leave
+ * an empty chunk at the tail, and buf_move_all() can then add chunks after
+ * it. */
+static buf_t *
+make_buf_with_chunks(const char **chunks)
+{
+  buf_t *buf = buf_new();
+  for ( ; *chunks; ++chunks) {
+    if (**chunks) {
+      /* Move the data in, so that it gets a chunk of its own. */
+      buf_t *tmp = buf_new();
+      buf_add_string(tmp, *chunks);
+      buf_move_all(buf, tmp);
+      buf_free(tmp);
+    } else {
+      buf_add_chunk_with_capacity(buf, 1, 1);
+    }
+  }
+  buf_assert_ok(buf);
+  return buf;
+}
+
+/* Buffer layouts for the flush_empty_chunks tests, in the format that
+ * make_buf_with_chunks() takes.  Each of them holds "AAAACCCC". */
+static const char *empty_middle_chunk[] = { "AAAA", "", "CCCC", NULL };
+static const char *empty_head_chunk[] = { "", "AAAA", "CCCC", NULL };
+static const char *many_empty_chunks[] = {
+  "", "", "AAAA", "", "", "CCCC", "", NULL
+};
+static const char **empty_chunk_layouts[] = {
+  empty_middle_chunk, empty_head_chunk, many_empty_chunks, NULL
+};
+/* The flush_empty_chunks tests flush each layout in two steps: first this
+ * many bytes, then the rest. */
+static const size_t first_flush_sizes[] = { 1, 4, 6, 8 };
+
+/* Flush buffers with empty chunks in them onto a pipe or a socket.  We used
+ * to stop flushing for good once we reached an empty chunk at the head of
+ * the buffer, even if there was more data after it. */
+static void
+test_buffers_flush_empty_chunks_fd(void *arg)
+{
+  const bool is_socket = !strcmp(arg, "socket");
+  int (*flush_fn)(buf_t *, tor_socket_t, size_t) = buf_flush_to_socket;
+  tor_socket_t fds[2] = { TOR_INVALID_SOCKET, TOR_INVALID_SOCKET };
+  const size_t alloc_at_start = buf_get_total_allocation();
+  buf_t *buf = NULL;
+  char out[64];
+  ssize_t n_read;
+
+  if (is_socket) {
+    tt_int_op(tor_socketpair(AF_UNIX, SOCK_STREAM, 0, fds), OP_EQ, 0);
+  } else {
+#ifdef _WIN32
+    tt_skip();
+#else
+    tt_int_op(pipe(fds), OP_EQ, 0);
+    flush_fn = buf_flush_to_pipe;
+#endif
+  }
+  /* If a flush comes up short, fail instead of hanging on the read. */
+  tt_int_op(set_socket_nonblocking(fds[0]), OP_EQ, 0);
+
+  for (int i = 0; empty_chunk_layouts[i]; ++i) {
+    for (unsigned j = 0; j < ARRAY_LENGTH(first_flush_sizes); ++j) {
+      const size_t n = first_flush_sizes[j];
+      buf = make_buf_with_chunks(empty_chunk_layouts[i]);
+      tt_int_op(buf_datalen(buf), OP_EQ, 8);
+      tt_int_op(flush_fn(buf, fds[1], n), OP_EQ, n);
+      tt_int_op(flush_fn(buf, fds[1], 8 - n), OP_EQ, 8 - n);
+      tt_int_op(buf_datalen(buf), OP_EQ, 0);
+      buf_assert_ok(buf);
+      /* Any chunks that we dropped are freed, and no longer counted. */
+      tt_int_op(buf_get_total_allocation(), OP_EQ,
+                alloc_at_start + buf_allocation(buf));
+      buf_free(buf);
+
+#ifdef _WIN32
+      n_read = tor_socket_recv(fds[0], out, sizeof(out), 0);
+#else
+      n_read = read(fds[0], out, sizeof(out));
+#endif
+      tt_int_op(n_read, OP_EQ, 8);
+      tt_mem_op(out, OP_EQ, "AAAACCCC", 8);
+    }
+  }
+
+ done:
+  buf_free(buf);
+  for (int i = 0; i < 2; ++i) {
+    if (!SOCKET_OK(fds[i]))
+      continue;
+    if (is_socket)
+      tor_close_socket(fds[i]);
+    else
+      tor_close_socket_simple(fds[i]); /* Just close() the pipe. */
+  }
+}
+
+/* Everything that mock_tls_write() has sent. */
+static buf_t *tls_sent = NULL;
+/* How many more bytes mock_tls_write() can send before it blocks. */
+static size_t tls_write_space = 0;
+/* If nonzero, the size of the last write that mock_tls_write() blocked on:
+ * like OpenSSL, it requires us to retry with the same size. */
+static size_t tls_forced_write_size = 0;
+
+static int
+mock_tls_write(tor_tls_t *tls, const char *cp, size_t n)
+{
+  (void)tls;
+  /* Like the real tor_tls_write(), there's nothing to do for no data. */
+  if (n == 0)
+    return 0;
+  if (tls_forced_write_size) {
+    tor_assert(n >= tls_forced_write_size);
+    n = tls_forced_write_size;
+  }
+  if (n > tls_write_space) {
+    tls_forced_write_size = n;
+    return TOR_TLS_WANTWRITE;
+  }
+  tls_forced_write_size = 0;
+  tls_write_space -= n;
+  buf_add(tls_sent, cp, n);
+  return (int)n;
+}
+
+static size_t
+mock_tls_get_forced_write_size(tor_tls_t *tls)
+{
+  (void)tls;
+  return tls_forced_write_size;
+}
+
+/* As test_buffers_flush_empty_chunks_fd(), but flush onto a (mocked) TLS
+ * connection. */
+static void
+test_buffers_flush_empty_chunks_tls(void *arg)
+{
+  const size_t alloc_at_start = buf_get_total_allocation();
+  buf_t *buf = NULL;
+  char *s = NULL;
+  (void)arg;
+
+  MOCK(tor_tls_write, mock_tls_write);
+  MOCK(tor_tls_get_forced_write_size, mock_tls_get_forced_write_size);
+  tls_sent = buf_new();
+  tls_write_space = SIZE_MAX;
+  tls_forced_write_size = 0;
+
+  for (int i = 0; empty_chunk_layouts[i]; ++i) {
+    for (unsigned j = 0; j < ARRAY_LENGTH(first_flush_sizes); ++j) {
+      const size_t n = first_flush_sizes[j];
+      buf = make_buf_with_chunks(empty_chunk_layouts[i]);
+      tt_int_op(buf_datalen(buf), OP_EQ, 8);
+      tt_int_op(buf_flush_to_tls(buf, NULL, n), OP_EQ, n);
+      tt_int_op(buf_flush_to_tls(buf, NULL, 8 - n), OP_EQ, 8 - n);
+      tt_int_op(buf_datalen(buf), OP_EQ, 0);
+      buf_assert_ok(buf);
+      /* Any chunks that we dropped are freed, and no longer counted. */
+      tt_int_op(buf_get_total_allocation(), OP_EQ,
+                alloc_at_start + buf_allocation(buf) +
+                buf_allocation(tls_sent));
+      buf_free(buf);
+
+      s = buf_extract(tls_sent, NULL);
+      tt_str_op(s, OP_EQ, "AAAACCCC");
+      tor_free(s);
+      buf_clear(tls_sent);
+    }
+  }
+
+  /* If the write after an empty chunk blocks, we retry it later on, even if
+   * we are not asked to flush any more data. */
+  buf = make_buf_with_chunks(empty_middle_chunk);
+  tls_write_space = 4;
+  tt_int_op(buf_flush_to_tls(buf, NULL, 8), OP_EQ, TOR_TLS_WANTWRITE);
+  tt_int_op(buf_datalen(buf), OP_EQ, 4);
+  tt_int_op(tls_forced_write_size, OP_EQ, 4);
+  tls_write_space = SIZE_MAX;
+  tt_int_op(buf_flush_to_tls(buf, NULL, 0), OP_EQ, 4);
+  tt_int_op(buf_datalen(buf), OP_EQ, 0);
+  s = buf_extract(tls_sent, NULL);
+  tt_str_op(s, OP_EQ, "AAAACCCC");
+
+ done:
+  UNMOCK(tor_tls_write);
+  UNMOCK(tor_tls_get_forced_write_size);
+  buf_free(buf);
+  buf_free(tls_sent);
+  tor_free(s);
+}
+
 static void
 test_buffers_chunk_size(void *arg)
 {
@@ -868,6 +1067,12 @@ struct testcase_t buffer_tests[] = {
     NULL, NULL },
   { "time_tracking", test_buffer_time_tracking, TT_FORK, NULL, NULL },
   { "tls_read_mocked", test_buffers_tls_read_mocked, 0,
+    NULL, NULL },
+  { "flush_empty_chunks/pipe", test_buffers_flush_empty_chunks_fd, TT_FORK,
+    &passthrough_setup, (char*)"pipe" },
+  { "flush_empty_chunks/socket", test_buffers_flush_empty_chunks_fd, TT_FORK,
+    &passthrough_setup, (char*)"socket" },
+  { "flush_empty_chunks/tls", test_buffers_flush_empty_chunks_tls, TT_FORK,
     NULL, NULL },
   { "chunk_size", test_buffers_chunk_size, 0, NULL, NULL },
   { "find_contentlen", test_buffers_find_contentlen, 0, NULL, NULL },

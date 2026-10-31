@@ -100,6 +100,7 @@ struct buf_t {
 };
 
 chunk_t *buf_add_chunk_with_capacity(buf_t *buf, size_t capacity, int capped);
+void buf_drop_empty_head_chunks(buf_t *buf);
 /** If a read onto the end of a chunk would be smaller than this number, then
  * just start a new chunk. */
 #define MIN_READ_LEN 8
