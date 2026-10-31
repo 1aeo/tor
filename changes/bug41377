@@ -1,0 +1,7 @@
+  o Minor bugfixes (buffers):
+    - When searching a buffer for a string (for example the end of HTTP
+      headers on a DirPort connection), skip over empty chunks instead
+      of comparing against stale bytes that are not part of the buffer's
+      data. Previously a request ending in "\r\n\r" exactly at a chunk
+      boundary could be spuriously treated as complete and then
+      rejected. Fixes bug 41377; bugfix on 0.2.0.16-alpha.
