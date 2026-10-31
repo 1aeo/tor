@@ -1,0 +1,8 @@
+  o Minor bugfixes (buffers):
+    - When searching a buffer for a string (such as the end of HTTP headers
+      on a DirPort or MetricsPort connection), skip over any empty buffer
+      chunks instead of reading stale bytes past the end of a chunk's data
+      or stopping early at an empty chunk spliced into the middle of a
+      buffer. Previously, a partial delimiter right before an empty tail
+      chunk could falsely match against unused chunk memory and cause the
+      request to be rejected. Fixes bug 41377; bugfix on 0.2.0.16-alpha.

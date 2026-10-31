@@ -13,7 +13,55 @@
 #include "lib/crypt_ops/crypto_rand.h"
 #include "core/proto/proto_http.h"
 #include "core/proto/proto_socks.h"
+#include "lib/net/buffers_net.h"
+#include "test/rng_test_helpers.h"
 #include "test/test.h"
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+/* When built with AddressSanitizer, the bug 41377 tests below poison the
+ * memory of each chunk that is not buffer data while the code under test
+ * runs, so that ASan reports a search that so much as reads it, even when the
+ * stale value would not change the answer.  (ASan works in 8-byte granules,
+ * so up to 7 bytes at the end of each such region can stay addressable; the
+ * start of an empty chunk's memory, where a stale read begins, is always
+ * poisoned.)  Without ASan, all of this compiles to nothing. */
+#if defined(__SANITIZE_ADDRESS__)
+/* GCC */
+#define BUF_TEST_HAVE_ASAN
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+/* clang */
+#define BUF_TEST_HAVE_ASAN
+#endif
+#endif /* defined(__SANITIZE_ADDRESS__) || ... */
+
+#ifdef BUF_TEST_HAVE_ASAN
+#if defined(__has_include)
+#if __has_include(<sanitizer/asan_interface.h>)
+#include <sanitizer/asan_interface.h>
+#define BUF_TEST_HAVE_ASAN_INTERFACE_H
+#endif
+#endif /* defined(__has_include) */
+#ifndef BUF_TEST_HAVE_ASAN_INTERFACE_H
+/* Every ASan runtime provides these, even where the header is missing. */
+void __asan_poison_memory_region(void const volatile *addr, size_t size);
+void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+void __asan_set_death_callback(void (*callback)(void));
+#endif /* !defined(BUF_TEST_HAVE_ASAN_INTERFACE_H) */
+#define BUF_TEST_POISON(p, n) __asan_poison_memory_region((p), (n))
+#define BUF_TEST_UNPOISON(p, n) __asan_unpoison_memory_region((p), (n))
+/* An ASan report kills the process before tinytest can print the seed of a
+ * failed reproducible-RNG test, so have ASan print it. */
+#define BUF_TEST_ON_ASAN_DEATH(fn) __asan_set_death_callback(fn)
+#else /* !defined(BUF_TEST_HAVE_ASAN) */
+#define BUF_TEST_POISON(p, n) ((void)(p), (void)(n))
+#define BUF_TEST_UNPOISON(p, n) ((void)(p), (void)(n))
+#define BUF_TEST_ON_ASAN_DEATH(fn) ((void)0)
+#endif /* defined(BUF_TEST_HAVE_ASAN) */
 
 /** Run unit tests for buffers.c */
 static void
@@ -858,6 +906,746 @@ test_buffer_peek_startswith(void *arg)
   buf_free(buf);
 }
 
+/* ---- Tests for bug 41377: searching a buffer across empty chunks. ---- */
+
+/** Append an empty chunk to the end of <b>buf</b>, as a socket, pipe or TLS
+ * read does when it allocates a chunk and then gets nothing.  Fill the
+ * chunk's never-written memory with <b>stale</b>, so that a search that
+ * wrongly reads it gives a visibly wrong answer. */
+static chunk_t *
+buf_add_empty_chunk_for_test(buf_t *buf, char stale)
+{
+  chunk_t *ch = buf_add_chunk_with_capacity(buf, 1, 1);
+  memset(ch->mem, stale, ch->memlen);
+  return ch;
+}
+
+/** Append a chunk of capacity <b>cap</b> filled completely (datalen == memlen)
+ * with <b>prefix</b>, repeated <b>pad_ch</b>, and <b>suffix</b>. */
+static chunk_t *
+buf_add_full_chunk_for_test(buf_t *buf, size_t cap, const char *prefix,
+                            const char *suffix, char pad_ch)
+{
+  size_t plen = strlen(prefix);
+  size_t slen = strlen(suffix);
+  chunk_t *ch = buf_add_chunk_with_capacity(buf, cap, 1);
+  tor_assert(ch);
+  tor_assert(ch->memlen >= plen + slen);
+  size_t padlen = ch->memlen - plen - slen;
+  if (plen)
+    memcpy(ch->data, prefix, plen);
+  if (padlen)
+    memset(ch->data + plen, (unsigned char)pad_ch, padlen);
+  if (slen)
+    memcpy(ch->data + plen + padlen, suffix, slen);
+  ch->datalen = ch->memlen;
+  buf->datalen += ch->memlen;
+  return ch;
+}
+
+/** Append <b>len</b> copies of <b>c</b> to <b>buf</b>, in new chunks of
+ * their own, using buf_move_all() the way linked connections move data.
+ * If <b>small</b>, use the smallest chunks that buffers allocate. */
+static void
+buf_move_bytes_for_test(buf_t *buf, char c, size_t len, int small)
+{
+  buf_t *tmp = small ? buf_new_with_capacity(1) : buf_new();
+  char *s = tor_malloc(len);
+  memset(s, c, len);
+  buf_add(tmp, s, len);
+  buf_move_all(buf, tmp);
+  buf_free(tmp);
+  tor_free(s);
+}
+
+/** Append <b>s</b> to <b>buf</b> in new chunk(s) of its own, using
+ * buf_move_all(). */
+static void
+buf_move_string_for_test(buf_t *buf, const char *s)
+{
+  buf_t *tmp = buf_new();
+  buf_add_string(tmp, s);
+  buf_move_all(buf, tmp);
+  buf_free(tmp);
+}
+
+/** Return the number of empty chunks in <b>buf</b> other than its tail. */
+static int
+buf_n_empty_nontail_chunks_for_test(const buf_t *buf)
+{
+  int n = 0;
+  for (const chunk_t *ch = buf->head; ch; ch = ch->next) {
+    if (ch->datalen == 0 && ch != buf->tail)
+      ++n;
+  }
+  return n;
+}
+
+/** Return the usable size of a chunk allocated by a buffer made with
+ * buf_new_with_capacity(<b>capacity</b>), or by buf_new() if
+ * <b>capacity</b> is 0.  (It depends on the platform's struct layout.) */
+static size_t
+chunk_memlen_for_test(size_t capacity)
+{
+  buf_t *probe = capacity ? buf_new_with_capacity(capacity) : buf_new();
+  buf_add(probe, "x", 1);
+  size_t memlen = probe->head->memlen;
+  buf_free(probe);
+  return memlen;
+}
+
+/** With ASan, make the memory of every chunk in <b>buf</b> that is not
+ * buffer data (the drained space before chunk->data, and the free space after
+ * the data) unaddressable, as far as ASan's granularity allows, except in
+ * <b>skip</b> if it is not NULL.  Nothing may write into or repack those
+ * chunks until buf_unpoison_for_test(). */
+static void
+buf_poison_unused_for_test(buf_t *buf, const chunk_t *skip)
+{
+  if (!buf)
+    return;
+  for (chunk_t *ch = buf->head; ch; ch = ch->next) {
+    if (ch == skip)
+      continue;
+    size_t lead = (size_t)(ch->data - ch->mem);
+    if (lead > 0)
+      BUF_TEST_POISON(ch->mem, lead);
+    size_t rem = CHUNK_REMAINING_CAPACITY(ch);
+    if (rem > 0)
+      BUF_TEST_POISON(CHUNK_WRITE_PTR(ch), rem);
+  }
+}
+
+/** Undo buf_poison_unused_for_test() for every chunk still in <b>buf</b>. */
+static void
+buf_unpoison_for_test(buf_t *buf)
+{
+  if (!buf)
+    return;
+  for (chunk_t *ch = buf->head; ch; ch = ch->next)
+    BUF_TEST_UNPOISON(ch->mem, ch->memlen);
+}
+
+/** As buf_find_string_offset(), with <b>buf</b>'s non-data memory poisoned.
+ */
+static int
+find_string_poisoned(buf_t *buf, const char *s, size_t n)
+{
+  buf_poison_unused_for_test(buf, NULL);
+  int r = buf_find_string_offset(buf, s, n);
+  buf_unpoison_for_test(buf);
+  return r;
+}
+
+/** As fetch_from_buf_http(), with <b>buf</b>'s non-data memory poisoned,
+ * except in the head chunk: buf_pullup() legitimately repacks the head chunk
+ * and copies data into its free space.  (A search can only reach a chunk's
+ * memory from the chunk before it, so it never reads the head's.) */
+static int
+fetch_http_poisoned(buf_t *buf, char **headers_out, size_t max_headerlen,
+                    char **body_out, size_t *body_used, size_t max_bodylen,
+                    int force_complete)
+{
+  buf_poison_unused_for_test(buf, buf->head);
+  int r = fetch_from_buf_http(buf, headers_out, max_headerlen, body_out,
+                              body_used, max_bodylen, force_complete);
+  buf_unpoison_for_test(buf);
+  return r;
+}
+
+/** The bug 41377 test case that is running.  An ASan report kills the test
+ * process before tinytest can say which assertion it was in, so we record
+ * the case up front and have the ASan death callback print it. */
+static char buf_test_case[96];
+/** True while a case that uses the reproducible RNG is running. */
+static int buf_test_case_uses_rng = 0;
+
+#ifdef BUF_TEST_HAVE_ASAN
+/** ASan death callback: say which case was running, and for a randomized
+ * case, which seed reproduces it. */
+static void
+buf_test_asan_death(void)
+{
+  if (buf_test_case[0])
+    fprintf(stderr, "\nbuffer test case: %s\n", buf_test_case);
+  if (buf_test_case_uses_rng) {
+    testing_dump_reproducible_rng_seed();
+    fflush(stdout);
+  }
+}
+#endif /* defined(BUF_TEST_HAVE_ASAN) */
+
+/** Record <b>name</b> as the running test case, for buf_test_asan_death(). */
+static void
+buf_test_set_case(const char *name)
+{
+  strlcpy(buf_test_case, name, sizeof(buf_test_case));
+  BUF_TEST_ON_ASAN_DEATH(buf_test_asan_death);
+}
+
+/** Forget the running test case when a test ends, so that under --no-fork a
+ * later, unrelated ASan report is not blamed on it. */
+static void
+buf_test_clear_case(void)
+{
+  buf_test_case[0] = '\0';
+  buf_test_case_uses_rng = 0;
+  BUF_TEST_ON_ASAN_DEATH(NULL);
+}
+
+#define BIG_HDR 50000
+#define BIG_BODY (1<<24)
+
+/* In the tests below, "main" means the code before the fix (which compared
+ * against stale bytes in empty chunks), and "2a9408f" means the reverted fix
+ * (which stopped searching at the first empty chunk).  Each case says which
+ * of them it catches. */
+
+static void
+test_buffers_find_string_empty_tail(void *arg)
+{
+  (void)arg;
+  buf_t *buf = buf_new();
+  char *headers = NULL, *body = NULL;
+  size_t body_len = 0;
+  const char req[] = "GET /tor/server/authority HTTP/1.0\r\nHost: x\r\n\r";
+  const int reqlen = (int)strlen(req);
+
+  buf_test_set_case("empty_tail: uninitialised empty tail");
+  /* Leave the empty tail chunk's memory uninitialised, so that valgrind and
+   * MSan report any read of it, whatever it happens to contain.  (This case
+   * comes first so that no failed assertion stops the test before it.) */
+  buf_add(buf, req, reqlen);
+  buf_add_chunk_with_capacity(buf, 1, 1);
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, -1);
+  buf_free(buf);
+
+  buf_test_set_case("empty_tail: full chunk CR LF CR, then an empty tail");
+  /* Production geometry: a 100%-full chunk (datalen == memlen) ending in a
+   * prefix of the pattern, followed by an empty tail chunk whose stale memory
+   * would complete the pattern.  Catches main. */
+  buf = buf_new_with_capacity(128);
+  chunk_t *c0 = buf_add_full_chunk_for_test(
+      buf, 128, "GET /tor/status HTTP/1.0\r\nX-Pad: ", "\r\n\r", 'A');
+  size_t c0_len = c0->memlen;
+  buf_add_empty_chunk_for_test(buf, '\n');
+  buf_assert_ok(buf);
+
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, -1);
+  /* A match that ends exactly at the end of the data is still found. */
+  tt_int_op(find_string_poisoned(buf, "\r\n\r", 3), OP_EQ, (int)c0_len - 3);
+  /* Not complete yet: must be 0 ("wait for more"), not -1 ("reject"). */
+  tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                BIG_BODY, 0), OP_EQ, 0);
+  tt_ptr_op(headers, OP_EQ, NULL);
+  tt_ptr_op(body, OP_EQ, NULL);
+
+  /* The final LF goes into the formerly empty tail chunk. */
+  buf_add(buf, "\n", 1);
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, (int)c0_len - 3);
+  tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                BIG_BODY, 0), OP_EQ, 1);
+  tt_ptr_op(headers, OP_NE, NULL);
+  tt_size_op(strlen(headers), OP_EQ, c0_len + 1);
+  tt_size_op(body_len, OP_EQ, 0);
+  tt_size_op(buf_datalen(buf), OP_EQ, 0);
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+
+  buf_test_set_case("empty_tail: partial chunk CR LF CR, then an empty tail");
+  /* Same with slack remaining in the first chunk.  Catches main. */
+  buf = buf_new();
+  buf_add(buf, req, reqlen);
+  buf_add_empty_chunk_for_test(buf, '\n');
+  buf_assert_ok(buf);
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, -1);
+  tt_int_op(find_string_poisoned(buf, "\r", 1), OP_EQ, 34);
+  buf_add(buf, "\n", 1);
+  tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                BIG_BODY, 0), OP_EQ, 1);
+  tt_str_op(headers, OP_EQ,
+            "GET /tor/server/authority HTTP/1.0\r\nHost: x\r\n\r\n");
+  tt_size_op(body_len, OP_EQ, 0);
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+
+  buf_test_set_case("empty_tail: complete request, then an empty tail");
+  /* A complete request followed by an empty tail chunk. */
+  buf = buf_new();
+  buf_add_string(buf, "GET / HTTP/1.0\r\n\r\n");
+  buf_add_empty_chunk_for_test(buf, '\r');
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, 14);
+  tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                BIG_BODY, 0), OP_EQ, 1);
+  tt_str_op(headers, OP_EQ, "GET / HTTP/1.0\r\n\r\n");
+
+ done:
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+  buf_test_clear_case();
+}
+
+static void
+test_buffers_find_string_empty_interior(void *arg)
+{
+  (void)arg;
+  buf_t *buf = NULL;
+  char *headers = NULL, *body = NULL;
+  size_t body_len = 0;
+
+  buf_test_set_case("empty_interior (a): CR before a hole, delimiter after");
+  /* (a) A first-character candidate is the last byte before an empty
+   * interior chunk; the real delimiter comes later.  Catches 2a9408f, and
+   * main under ASan. */
+  {
+    const char a[] = "HTTP/1.0 200 OK\r\nX-A: 1\r";
+    const char c[] = "\nX-Final: yup\r\n\r\n";
+    buf = buf_new();
+    buf_add_string(buf, a);
+    buf_add_empty_chunk_for_test(buf, 'x');
+    buf_move_string_for_test(buf, c);
+    buf_assert_ok(buf);
+    tt_int_op(buf_n_empty_nontail_chunks_for_test(buf), OP_EQ, 1);
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ,
+              (int)(strlen(a) + strlen(c) - 4));
+    tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                  BIG_BODY, 0), OP_EQ, 1);
+    tt_str_op(headers, OP_EQ,
+              "HTTP/1.0 200 OK\r\nX-A: 1\r\nX-Final: yup\r\n\r\n");
+    tor_free(headers);
+    tor_free(body);
+    buf_free(buf);
+  }
+
+  buf_test_set_case("empty_interior (b): delimiter straddles a hole");
+  /* (b) The delimiter itself straddles an empty interior chunk.  Catches
+   * main and 2a9408f. */
+  {
+    const char a[] = "HTTP/1.0 200 OK\r\n";
+    buf = buf_new();
+    buf_add_string(buf, a);
+    buf_add_empty_chunk_for_test(buf, 'x');
+    buf_move_string_for_test(buf, "\r\nbody");
+    buf_assert_ok(buf);
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ,
+              (int)strlen(a) - 2);
+    tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                  BIG_BODY, 0), OP_EQ, 1);
+    tt_str_op(headers, OP_EQ, "HTTP/1.0 200 OK\r\n\r\n");
+    tt_size_op(body_len, OP_EQ, 4);
+    tt_str_op(body, OP_EQ, "body");
+    tor_free(headers);
+    tor_free(body);
+    buf_free(buf);
+  }
+
+  buf_test_set_case("empty_interior (c): stale bytes in a hole");
+  /* (c) Stale bytes in an empty interior chunk must not complete a match
+   * at the wrong place.  Catches main and 2a9408f. */
+  {
+    const char a[] = "HTTP/1.0 200 OK\r\nX-A: 1\r\n\r";
+    const char c[] = "X-B: 2\r\n\r\n";
+    buf = buf_new();
+    buf_add_string(buf, a);
+    buf_add_empty_chunk_for_test(buf, '\n');
+    buf_move_string_for_test(buf, c);
+    buf_assert_ok(buf);
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ,
+              (int)(strlen(a) + strlen(c) - 4));
+    buf_free(buf);
+  }
+
+  buf_test_set_case("empty_interior (d): delimiter split across two chunks");
+  /* (d) A delimiter split across two nonempty chunks, with no empty chunk:
+   * the existing tests never cross a chunk boundary. */
+  {
+    buf = buf_new();
+    buf_add_string(buf, "GET / HTTP/1.0\r\n\r");
+    buf_move_string_for_test(buf, "\nbody");
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, 14);
+    tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                  BIG_BODY, 0), OP_EQ, 1);
+    tt_str_op(headers, OP_EQ, "GET / HTTP/1.0\r\n\r\n");
+    tt_size_op(body_len, OP_EQ, 4);
+    tt_str_op(body, OP_EQ, "body");
+    tor_free(headers);
+    tor_free(body);
+    buf_free(buf);
+  }
+
+  buf_test_set_case("empty_interior (e): runs of holes, including the head");
+  /* (e) Several empty chunks in a row, including at the head.  Catches main
+   * and 2a9408f. */
+  {
+    buf = buf_new();
+    buf_add_empty_chunk_for_test(buf, '\r');
+    buf_add_empty_chunk_for_test(buf, '\n');
+    buf_move_string_for_test(buf, "ab\r");
+    buf_add_empty_chunk_for_test(buf, '\r');
+    buf_add_empty_chunk_for_test(buf, '\n');
+    buf_move_string_for_test(buf, "\n");
+    buf_add_empty_chunk_for_test(buf, 'x');
+    buf_move_string_for_test(buf, "\r\ncd");
+    buf_assert_ok(buf);
+    tt_int_op(buf_n_empty_nontail_chunks_for_test(buf), OP_EQ, 5);
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, 2);
+    tt_int_op(find_string_poisoned(buf, "ab", 2), OP_EQ, 0);
+    tt_int_op(find_string_poisoned(buf, "\ncd", 3), OP_EQ, 5);
+    tt_int_op(find_string_poisoned(buf, "cd\r", 3), OP_EQ, -1);
+    buf_free(buf);
+  }
+
+  buf_test_set_case("empty_interior (f): leading holes, no match");
+  /* (f) Leading empty chunks, then data without the needle, with the data
+   * at least as long as the needle: the walk, not the length check,
+   * decides. */
+  {
+    buf = buf_new();
+    buf_add_empty_chunk_for_test(buf, '\r');
+    buf_add_empty_chunk_for_test(buf, '\n');
+    buf_move_string_for_test(buf, "abcd");
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, -1);
+    tt_int_op(find_string_poisoned(buf, "abcd", 4), OP_EQ, 0);
+    tt_int_op(find_string_poisoned(buf, "cd", 2), OP_EQ, 2);
+    buf_free(buf);
+  }
+
+  buf_test_set_case("empty_interior (g): only empty chunks");
+  /* (g) Nothing but empty chunks: every needle is longer than the data. */
+  {
+    buf = buf_new();
+    buf_add_empty_chunk_for_test(buf, '\r');
+    buf_add_empty_chunk_for_test(buf, '\n');
+    buf_assert_ok(buf);
+    tt_int_op(find_string_poisoned(buf, "\r", 1), OP_EQ, -1);
+    tt_int_op(find_string_poisoned(buf, "\r\n", 2), OP_EQ, -1);
+    tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                  BIG_BODY, 0), OP_EQ, 0);
+    buf_free(buf);
+  }
+
+  buf_test_set_case("empty_interior (h): drained chunk, then holes");
+  /* (h) A partly drained chunk, whose consumed space holds '\r' bytes,
+   * then empty chunks, then the end of the delimiter.  Catches main and
+   * 2a9408f. */
+  {
+    buf = buf_new();
+    buf_add_string(buf, "\r\r\r\r\rGET / HTTP/1.0\r\n");
+    buf_drain(buf, 5);
+    tt_ptr_op(buf->head->data, OP_EQ, buf->head->mem + 5);
+    buf_add_empty_chunk_for_test(buf, '\r');
+    buf_add_empty_chunk_for_test(buf, '\n');
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, -1);
+    buf_move_string_for_test(buf, "\r\n");
+    tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, 14);
+    tt_int_op(find_string_poisoned(buf, "GET", 3), OP_EQ, 0);
+  }
+
+ done:
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+  buf_test_clear_case();
+}
+
+/** Needles longer than a chunk.  Except where noted, keep buf_datalen() at
+ * least as long as the needle, so that the walk (not the needle-length check)
+ * decides the result.  The stale bytes must fit inside the empty chunk's
+ * memory to catch main: past it, every chunk has zeroed sentinel bytes, and
+ * main's walk stops there. */
+static void
+test_buffers_find_string_long_needle(void *arg)
+{
+  (void)arg;
+  buf_t *buf = NULL;
+  const size_t small = chunk_memlen_for_test(1);
+  const size_t n_a = 2 * small + 420;
+  char *a = tor_malloc(n_a);
+  memset(a, 'A', n_a);
+
+  buf_test_set_case("long_needle: stale bytes in a default-sized hole");
+  /* [220 X][208 A][empty default-sized chunk, stale 'A']: the data has only
+   * 208 'A's.  Catches main (its walk completes the needle with stale bytes
+   * and reports offset 220). */
+  buf = buf_new();
+  buf_move_bytes_for_test(buf, 'X', 220, 0);
+  buf_move_bytes_for_test(buf, 'A', 208, 0);
+  buf_add_empty_chunk_for_test(buf, 'A');
+  tt_size_op(buf_datalen(buf), OP_EQ, 428);
+  tt_int_op(find_string_poisoned(buf, a, 420), OP_EQ, -1);
+  tt_int_op(find_string_poisoned(buf, a, 209), OP_EQ, -1);
+  tt_int_op(find_string_poisoned(buf, a, 208), OP_EQ, 220);
+  buf_free(buf);
+
+  buf_test_set_case("long_needle: needle ends at the end of a small hole");
+  /* The same with the smallest chunks: one chunk of 'A's, then an empty
+   * chunk of the same size, and a needle that would end exactly at the end
+   * of the empty chunk's memory.  Catches main. */
+  buf = buf_new_with_capacity(1);
+  buf_move_bytes_for_test(buf, 'X', 2 * small, 1);
+  buf_move_bytes_for_test(buf, 'A', small, 1);
+  buf_add_empty_chunk_for_test(buf, 'A');
+  tt_size_op(buf->tail->memlen, OP_EQ, small);
+  tt_size_op(buf_datalen(buf), OP_EQ, 3 * small);
+  tt_int_op(find_string_poisoned(buf, a, 2 * small), OP_EQ, -1);
+  tt_int_op(find_string_poisoned(buf, a, small), OP_EQ, (int)(2 * small));
+  buf_free(buf);
+
+  buf_test_set_case("long_needle: 420 real bytes split by a hole");
+  /* [220 X][208 A][empty, stale 'B'][212 A]: 420 real 'A's, split by an
+   * empty chunk whose stale memory differs.  Catches main and 2a9408f. */
+  buf = buf_new();
+  buf_move_bytes_for_test(buf, 'X', 220, 0);
+  buf_move_bytes_for_test(buf, 'A', 208, 0);
+  buf_add_empty_chunk_for_test(buf, 'B');
+  buf_move_bytes_for_test(buf, 'A', 212, 0);
+  tt_size_op(buf_datalen(buf), OP_EQ, 640);
+  tt_int_op(find_string_poisoned(buf, a, 420), OP_EQ, 220);
+  tt_int_op(find_string_poisoned(buf, a, 421), OP_EQ, -1);
+  buf_free(buf);
+
+  buf_test_set_case("long_needle: needle longer than the data");
+  /* A needle longer than all of the data (decided by the needle-length
+   * check).  Main completes it with the stale byte. */
+  buf = buf_new();
+  buf_add_string(buf, "AAA");
+  buf_add_empty_chunk_for_test(buf, 'A');
+  tt_int_op(find_string_poisoned(buf, a, 4), OP_EQ, -1);
+  tt_int_op(find_string_poisoned(buf, a, 3), OP_EQ, 0);
+
+ done:
+  buf_free(buf);
+  tor_free(a);
+  buf_test_clear_case();
+}
+
+/** Build many random chunk layouts (with empty chunks at the head, in the
+ * middle and at the tail, partly-drained heads, and plausible garbage in
+ * all memory that isn't buffer data), and check buf_find_string_offset()
+ * against a search of the flattened contents. */
+static void
+test_buffers_find_string_random(void *arg)
+{
+  (void)arg;
+  static const char alphabet[] = "\r\nab";
+  /* Needles with repeated prefixes, which make a match restart. */
+  static const char *fixed_needles[] = {
+    "\r\n\r\n", "\r\n", "a", "ab", "aba\r\n", "\r\na\r\n\r\n",
+  };
+  buf_t *buf = NULL, *tmp = NULL;
+  char *flat = NULL;
+  size_t flatlen = 0;
+
+  testing_enable_reproducible_rng();
+  buf_test_case_uses_rng = 1;
+  buf_test_set_case("random");
+
+  for (int iter = 0; iter < 2000; ++iter) {
+    tor_snprintf(buf_test_case, sizeof(buf_test_case),
+                 "random: iteration %d", iter);
+    buf = buf_new_with_capacity(1);
+    int n_ops = crypto_rand_int_range(1, 16);
+    for (int op = 0; op < n_ops; ++op) {
+      char seg[64];
+      size_t seglen = crypto_rand_int_range(1, sizeof(seg));
+      for (size_t i = 0; i < seglen; ++i)
+        seg[i] = alphabet[crypto_rand_int(4)];
+      switch (crypto_rand_int(4)) {
+        case 0: /* Append in place (this may fill an empty tail chunk). */
+          buf_add(buf, seg, seglen);
+          break;
+        case 1: /* Splice on a separate buffer's chunks. */
+          tmp = buf_new_with_capacity(1);
+          buf_add(tmp, seg, seglen);
+          if (crypto_rand_int(2))
+            buf_add_chunk_with_capacity(tmp, 1, 1);
+          buf_move_all(buf, tmp);
+          buf_free(tmp);
+          break;
+        case 2: /* Empty chunk at the tail, for now. */
+          buf_add_chunk_with_capacity(buf, 1, 1);
+          break;
+        case 3: /* Consume a little from the front. */
+          if (buf_datalen(buf)) {
+            size_t max = MIN(buf_datalen(buf), 20);
+            buf_drain(buf, crypto_rand_int_range(1, (unsigned)max + 1));
+          }
+          break;
+      }
+    }
+    /* Make every byte that isn't buffer data look like plausible data. */
+    for (chunk_t *ch = buf->head; ch; ch = ch->next) {
+      for (char *p = ch->mem; p < ch->data; ++p)
+        *p = alphabet[crypto_rand_int(4)];
+      for (char *p = CHUNK_WRITE_PTR(ch); p < ch->mem + ch->memlen; ++p)
+        *p = alphabet[crypto_rand_int(4)];
+    }
+    buf_assert_ok(buf);
+
+    flat = buf_extract(buf, &flatlen);
+    for (int k = 0; k < 24; ++k) {
+      char pat[260];
+      size_t patlen;
+      if (k < (int)ARRAY_LENGTH(fixed_needles)) {
+        patlen = strlen(fixed_needles[k]);
+        memcpy(pat, fixed_needles[k], patlen);
+      } else if (k % 3 == 0 && flatlen) {
+        /* A slice of the data, so that long matches spanning many chunks
+         * (and the empty chunks between them) must be found. */
+        size_t maxlen = MIN(flatlen, sizeof(pat));
+        size_t start;
+        patlen = crypto_rand_int_range(1, (unsigned)maxlen + 1);
+        start = crypto_rand_int_range(0, (unsigned)(flatlen - patlen) + 1);
+        memcpy(pat, flat + start, patlen);
+      } else {
+        patlen = crypto_rand_int_range(1, (k % 3 == 1) ? 40 : 6);
+        for (size_t i = 0; i < patlen; ++i)
+          pat[i] = alphabet[crypto_rand_int(4)];
+      }
+      const char *hit = flatlen ? tor_memmem(flat, flatlen, pat, patlen) :
+        NULL;
+      int expected = hit ? (int)(hit - flat) : -1;
+      tt_int_op(find_string_poisoned(buf, pat, patlen), OP_EQ, expected);
+    }
+    tor_free(flat);
+    buf_free(buf);
+  }
+
+ done:
+  testing_disable_reproducible_rng();
+  tor_free(flat);
+  buf_free(buf);
+  buf_test_clear_case();
+}
+
+#ifndef _WIN32
+/** Helper: Return a new buffer holding <b>memlen</b> bytes of <b>data</b>
+ * read from a pipe the way a DirPort connection would read them: in two
+ * read events, the second of which fills the tail chunk exactly, allocates
+ * a new chunk, and then gets EAGAIN.  The result is [full chunk][empty
+ * chunk]. */
+static buf_t *
+buf_from_pipe_with_empty_tail_for_test(const char *data, size_t memlen)
+{
+  int fds[2] = { -1, -1 };
+  int eof = 0, err = 0;
+  buf_t *buf = NULL;
+  /* The write end is non-blocking too, so that a pipe too small to hold
+   * memlen bytes makes the test fail rather than hang. */
+  if (pipe(fds) < 0 || fcntl(fds[0], F_SETFL, O_NONBLOCK) < 0 ||
+      fcntl(fds[1], F_SETFL, O_NONBLOCK) < 0)
+    goto err;
+  if (write(fds[1], data, memlen) != (ssize_t)memlen)
+    goto err;
+  buf = buf_new();
+  if (buf_read_from_pipe(buf, fds[0], memlen - 100, &eof, &err) !=
+      (int)memlen - 100)
+    goto err;
+  if (buf_read_from_pipe(buf, fds[0], 200, &eof, &err) != 100)
+    goto err;
+  if (eof || buf->head == buf->tail || buf->head->datalen != memlen ||
+      buf->tail->datalen != 0 || buf->head->next != buf->tail)
+    goto err;
+  close(fds[0]);
+  close(fds[1]);
+  return buf;
+ err:
+  if (fds[0] >= 0)
+    close(fds[0]);
+  if (fds[1] >= 0)
+    close(fds[1]);
+  buf_free(buf);
+  return NULL;
+}
+#endif /* !defined(_WIN32) */
+
+/** End-to-end versions of the tests above, through fetch_from_buf_http(),
+ * with the empty chunk produced by a real pipe read. */
+static void
+test_buffers_find_string_pipe(void *arg)
+{
+  (void)arg;
+#ifdef _WIN32
+  tt_skip();
+ done:
+  ;
+#else /* !defined(_WIN32) */
+  buf_t *buf = NULL, *rest = NULL;
+  char *req = NULL, *headers = NULL, *body = NULL;
+  size_t body_len = 0;
+  const size_t memlen = chunk_memlen_for_test(0);
+  const char final[] = "\nX-Final: yup\r\n\r\n";
+
+  tt_size_op(memlen, OP_GT, 200);
+  req = tor_malloc(memlen);
+  memset(req, 'a', memlen);
+  memcpy(req, "GET / HTTP/1.0\r\nX-Pad: ", 23);
+
+  buf_test_set_case("pipe 1: CR LF CR, then an empty tail from a read");
+  /* 1. The original bug: the first chunk ends in "\r\n\r" and the empty
+   * tail chunk's stale memory starts with "\n".  Catches main. */
+  memcpy(req + memlen - 3, "\r\n\r", 3);
+  buf = buf_from_pipe_with_empty_tail_for_test(req, memlen);
+  tt_assert(buf);
+  memset(buf->tail->mem, '\n', buf->tail->memlen);
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ, -1);
+  tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                BIG_BODY, 0), OP_EQ, 0);
+
+  buf_test_set_case("pipe 2: delimiter straddles the hole");
+  /* 2. The rest arrives via buf_move_all(), leaving the empty chunk in the
+   * middle; the real delimiter straddles it.  Catches main and 2a9408f. */
+  memset(buf->tail->mem, 'x', buf->tail->memlen);
+  rest = buf_new();
+  buf_add_string(rest, final);
+  buf_move_all(buf, rest);
+  buf_free(rest);
+  buf_assert_ok(buf);
+  tt_int_op(buf_n_empty_nontail_chunks_for_test(buf), OP_EQ, 1);
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ,
+            (int)memlen - 3);
+  tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                BIG_BODY, 0), OP_EQ, 1);
+  tt_size_op(strlen(headers), OP_EQ, memlen + 1);
+  tt_str_op(body, OP_EQ, final + 1);
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+
+  buf_test_set_case("pipe 3: delimiter after the hole");
+  /* 3. The first chunk ends with the CR of a header line, the rest arrives
+   * via buf_move_all(), and the real delimiter is entirely after the empty
+   * chunk.  Catches 2a9408f. */
+  req[memlen - 3] = 'a';
+  req[memlen - 2] = 'a';
+  req[memlen - 1] = '\r';
+  buf = buf_from_pipe_with_empty_tail_for_test(req, memlen);
+  tt_assert(buf);
+  memset(buf->tail->mem, 'x', buf->tail->memlen);
+  rest = buf_new();
+  buf_add_string(rest, final);
+  buf_move_all(buf, rest);
+  buf_free(rest);
+  buf_assert_ok(buf);
+  tt_int_op(find_string_poisoned(buf, "\r\n\r\n", 4), OP_EQ,
+            (int)(memlen + strlen(final) - 4));
+  tt_int_op(fetch_http_poisoned(buf, &headers, BIG_HDR, &body, &body_len,
+                                BIG_BODY, 0), OP_EQ, 1);
+  tt_size_op(strlen(headers), OP_EQ, memlen + strlen(final));
+  tt_size_op(body_len, OP_EQ, 0);
+
+ done:
+  tor_free(req);
+  tor_free(headers);
+  tor_free(body);
+  buf_free(buf);
+  buf_test_clear_case();
+#endif /* defined(_WIN32) */
+}
+
 struct testcase_t buffer_tests[] = {
   { "basic", test_buffers_basic, TT_FORK, NULL, NULL },
   { "copy", test_buffer_copy, TT_FORK, NULL, NULL },
@@ -871,6 +1659,16 @@ struct testcase_t buffer_tests[] = {
     NULL, NULL },
   { "chunk_size", test_buffers_chunk_size, 0, NULL, NULL },
   { "find_contentlen", test_buffers_find_contentlen, 0, NULL, NULL },
+  { "find_string_empty_tail", test_buffers_find_string_empty_tail,
+    TT_FORK, NULL, NULL },
+  { "find_string_empty_interior", test_buffers_find_string_empty_interior,
+    TT_FORK, NULL, NULL },
+  { "find_string_long_needle", test_buffers_find_string_long_needle,
+    TT_FORK, NULL, NULL },
+  { "find_string_random", test_buffers_find_string_random,
+    TT_FORK, NULL, NULL },
+  { "find_string_pipe", test_buffers_find_string_pipe,
+    TT_FORK, NULL, NULL },
 
   { "compress/zlib", test_buffers_compress, TT_FORK,
     &passthrough_setup, (char*)"deflate" },
