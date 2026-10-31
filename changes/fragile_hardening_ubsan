@@ -1,0 +1,10 @@
+  o Minor bugfixes (build):
+    - Make --enable-fragile-hardening enable UndefinedBehaviorSanitizer
+      again. The configure check for -fno-sanitize=float-divide-by-zero
+      replaced -fsanitize=undefined instead of adding to it, so these
+      builds only got AddressSanitizer and -ftrapv. Bugfix on
+      0.4.1.1-alpha.
+    - When configure checks whether it can link with -fsanitize=undefined,
+      use the result of that check instead of the result for
+      -fsanitize=address. Also name the right sanitizer run-time library
+      when one of these link checks fails. Bugfix on 0.2.9.1-alpha.
