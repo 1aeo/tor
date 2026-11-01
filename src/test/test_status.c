@@ -368,6 +368,7 @@ test_status_hb_not_in_consensus(void *arg)
                  "[DoSStreamCreationEnabled disabled], "
                  "[DoSBeginDirLimitEnabled disabled], "
                  "[DoSBeginDirRateEnabled disabled], "
+                 "[DoSBeginDirWaitEnabled disabled], "
                  "0 BEGIN_DIR HSDir requests rejected, "
                  "0 INTRODUCE2 rejected.\n");
   tt_int_op(mock_saved_log_n_entries(), OP_EQ, 6);

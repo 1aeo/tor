@@ -11,6 +11,7 @@
 #include "core/or/connection_edge.h"
 #include "core/or/connection_or.h"
 #include "core/or/channeltls.h"
+#include "core/or/dos.h"
 #include "feature/dircache/dircache.h"
 #include "feature/dircache/dirserv.h"
 #include "feature/dirclient/dirclient.h"
@@ -491,6 +492,13 @@ connection_dir_process_inbuf(dir_connection_t *conn)
       connection_mark_for_close(TO_CONN(conn));
       return -1;
     }
+    /* If a complete request was parsed the state advances out of
+     * COMMAND_WAIT: the connection is no longer waiting, so release its slot
+     * against the command-wait bound. A partial request leaves the state
+     * unchanged and keeps the connection counted. */
+    if (conn->base_.state != DIR_CONN_STATE_SERVER_COMMAND_WAIT) {
+      dos_begindir_wait_remove(conn);
+    }
     return 0;
   }
 
@@ -518,6 +526,13 @@ void
 connection_dir_about_to_close(dir_connection_t *dir_conn)
 {
   connection_t *conn = TO_CONN(dir_conn);
+
+  /* If this tunneled directory connection was waiting for a request, release
+   * its slot against the command-wait bound. This is the single teardown path
+   * every closing connection reaches, so it covers a request that never
+   * arrived, a circuit DESTROY, memory reclamation and the stall/wait
+   * timeouts; it is idempotent for a connection already released above. */
+  dos_begindir_wait_remove(dir_conn);
 
   if (conn->state < DIR_CONN_STATE_CLIENT_FINISHED) {
     /* It's a directory connection and connecting or fetching

@@ -75,7 +75,7 @@ problem dependency-violation /src/core/mainloop/connection.c 47
 problem dependency-violation /src/core/mainloop/cpuworker.c 12
 problem include-count /src/core/mainloop/mainloop.c 64
 problem function-size /src/core/mainloop/mainloop.c:conn_close_if_marked() 107
-problem function-size /src/core/mainloop/mainloop.c:run_connection_housekeeping() 123
+problem function-size /src/core/mainloop/mainloop.c:run_connection_housekeeping() 138
 problem dependency-violation /src/core/mainloop/mainloop.c 50
 problem dependency-violation /src/core/mainloop/mainloop_pubsub.c 1
 problem dependency-violation /src/core/mainloop/mainloop_sys.c 1
@@ -144,7 +144,7 @@ problem dependency-violation /src/core/or/connection_edge.h 1
 problem function-size /src/core/or/connection_or.c:connection_or_group_set_badness_() 105
 problem function-size /src/core/or/connection_or.c:connection_or_client_learned_peer_id() 142
 problem dependency-violation /src/core/or/connection_or.c 21
-problem dependency-violation /src/core/or/dos.c 6
+problem dependency-violation /src/core/or/dos.c 7
 problem dependency-violation /src/core/or/extendinfo.c 6
 problem dependency-violation /src/core/or/onion.c 2
 problem file-size /src/core/or/or.h 1150

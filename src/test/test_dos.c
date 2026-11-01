@@ -22,6 +22,10 @@
 #include "core/or/or_connection_st.h"
 #include "feature/nodelist/routerstatus_st.h"
 
+#include "core/mainloop/connection.h"
+#include "feature/dircommon/directory.h"
+#include "feature/dircommon/dir_connection_st.h"
+
 #include "test/test.h"
 #include "test/log_test_helpers.h"
 
@@ -613,6 +617,119 @@ test_dos_begindir_limit(void *arg)
   dos_free_all();
 }
 
+static uint32_t
+mock_begindir_wait_max(const networkstatus_t *ns)
+{
+  (void) ns;
+  return 2;
+}
+
+static uint32_t
+mock_begindir_wait_timeout(const networkstatus_t *ns)
+{
+  (void) ns;
+  return 5;
+}
+
+/** Test the relay-wide BEGIN_DIR command-wait bound. */
+static void
+test_dos_begindir_wait(void *arg)
+{
+  dir_connection_t *a = NULL, *b = NULL, *c = NULL;
+  (void) arg;
+
+  a = dir_connection_new(AF_INET);
+  b = dir_connection_new(AF_INET);
+  c = dir_connection_new(AF_INET);
+
+  /* Disabled: nothing is counted or refused, whatever we do. */
+  dos_init();
+  tt_assert(!dos_begindir_wait_should_refuse());
+  dos_begindir_wait_add(a);
+  tt_uint_op(a->dos_begindir_wait_counted, OP_EQ, 0);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 0);
+  tt_assert(!dos_begindir_wait_conn_expired(a, 1000000));
+  dos_begindir_wait_remove(a);
+
+  /* Enable with a max of 2 and a timeout of 5 seconds. */
+  MOCK(get_param_begindir_wait_enabled, mock_enable_dos_protection);
+  MOCK(get_param_begindir_wait_max, mock_begindir_wait_max);
+  MOCK(get_param_begindir_wait_timeout, mock_begindir_wait_timeout);
+  dos_init();
+
+  /* Admission boundary: admit below the max, refuse at it, counting. */
+  tt_assert(!dos_begindir_wait_should_refuse());
+  dos_begindir_wait_add(a);
+  tt_uint_op(a->dos_begindir_wait_counted, OP_EQ, 1);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 1);
+  tt_assert(!dos_begindir_wait_should_refuse());
+  dos_begindir_wait_add(b);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 2);
+  tt_assert(dos_begindir_wait_should_refuse());
+  tt_u64_op(dos_get_num_begindir_wait_rejected(), OP_EQ, 1);
+  tt_assert(dos_begindir_wait_should_refuse());
+  tt_u64_op(dos_get_num_begindir_wait_rejected(), OP_EQ, 2);
+
+  /* add() is counted at most once per connection. */
+  dos_begindir_wait_add(a);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 2);
+
+  /* remove() releases exactly once; a second remove is a safe no-op. */
+  dos_begindir_wait_remove(a);
+  tt_uint_op(a->dos_begindir_wait_counted, OP_EQ, 0);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 1);
+  dos_begindir_wait_remove(a);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 1);
+  /* Removing a connection that was never counted is also a no-op. */
+  dos_begindir_wait_remove(c);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 1);
+  /* With a slot freed we admit again. */
+  tt_assert(!dos_begindir_wait_should_refuse());
+  dos_begindir_wait_remove(b);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 0);
+
+  /* The reclaim deadline: a counted connection older than the timeout (5s)
+   * has expired; a fresh one, or one not counted, has not. */
+  dos_begindir_wait_add(a);
+  a->base_.timestamp_created = 1000;
+  tt_assert(dos_begindir_wait_conn_expired(a, 1000 + 6));
+  tt_assert(!dos_begindir_wait_conn_expired(a, 1000 + 5));
+  tt_assert(!dos_begindir_wait_conn_expired(b, 1000 + 6)); /* not counted */
+  dos_begindir_wait_remove(a);
+
+  /* The real teardown path releases a counted connection exactly once:
+   * connection_dir_about_to_close() is reached by every closing dir conn. */
+  a->base_.type = CONN_TYPE_DIR;
+  a->base_.purpose = DIR_PURPOSE_SERVER;
+  a->base_.state = DIR_CONN_STATE_SERVER_COMMAND_WAIT;
+  dos_begindir_wait_add(a);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 1);
+  connection_dir_about_to_close(a);
+  tt_uint_op(a->dos_begindir_wait_counted, OP_EQ, 0);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 0);
+  /* A second teardown pass does not double-release. */
+  connection_dir_about_to_close(a);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 0);
+
+  /* Disabling stops refusing and expiring; a counted slot is still released
+   * cleanly. */
+  UNMOCK(get_param_begindir_wait_enabled);
+  dos_init();
+  tt_assert(!dos_begindir_wait_should_refuse());
+  tt_assert(!dos_begindir_wait_conn_expired(a, 1000 + 600));
+  dos_begindir_wait_remove(a);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 0);
+
+ done:
+  UNMOCK(get_param_begindir_wait_enabled);
+  UNMOCK(get_param_begindir_wait_max);
+  UNMOCK(get_param_begindir_wait_timeout);
+  if (a) connection_free_(TO_CONN(a));
+  if (b) connection_free_(TO_CONN(b));
+  if (c) connection_free_(TO_CONN(c));
+  dos_free_all();
+}
+
 struct testcase_t dos_tests[] = {
   { "conn_creation", test_dos_conn_creation, TT_FORK, NULL, NULL },
   { "circuit_creation", test_dos_circuit_creation, TT_FORK, NULL, NULL },
@@ -621,5 +738,6 @@ struct testcase_t dos_tests[] = {
     NULL, NULL },
   { "conn_rate", test_dos_conn_rate, TT_FORK, NULL, NULL },
   { "begindir_limit", test_dos_begindir_limit, TT_FORK, NULL, NULL },
+  { "begindir_wait", test_dos_begindir_wait, TT_FORK, NULL, NULL },
   END_OF_TESTCASES
 };

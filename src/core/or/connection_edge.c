@@ -4267,6 +4267,14 @@ connection_exit_begin_conn(const relay_msg_t *msg, circuit_t *circ)
                                     END_STREAM_REASON_MISC, layer_hint);
       return 0;
     }
+    /* Bound the relay-wide number of tunneled directory connections waiting
+     * for a request, before we allocate the edge and directory connection
+     * pair. */
+    if (dos_begindir_wait_should_refuse()) {
+      relay_send_end_cell_from_edge(msg->stream_id, circ,
+                                    END_STREAM_REASON_MISC, layer_hint);
+      return 0;
+    }
     /* Make sure to get the 'real' address of the previous hop: the
      * caller might want to know whether the remote IP address has changed,
      * and we might already have corrected base_.addr[ess] for the relay's
@@ -4760,6 +4768,11 @@ connection_exit_connect_dir(edge_connection_t *exitconn)
     connection_free_(TO_CONN(dirconn));
     return 0;
   }
+
+  /* The directory connection is registered and waiting for a request; count
+   * it against the relay-wide command-wait bound (dos_begindir_wait_*). It is
+   * released when the request arrives or the connection closes. */
+  dos_begindir_wait_add(dirconn);
 
   connection_start_reading(TO_CONN(dirconn));
   connection_start_reading(TO_CONN(exitconn));

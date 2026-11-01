@@ -1247,6 +1247,20 @@ run_connection_housekeeping(int i, time_t now)
     return;
   }
 
+  /* Reclaim a tunneled directory connection that has waited too long for its
+   * request, so it cannot hold a slot against the relay-wide command-wait
+   * bound. This reuses the once-per-second housekeeping walk; admission stays
+   * O(1). The connection's slot is released on its teardown path. */
+  if (conn->type == CONN_TYPE_DIR &&
+      dos_begindir_wait_conn_expired(TO_DIR_CONN(conn), now)) {
+    /* A tunneled directory connection has no socket, so log the connection's
+     * global identifier rather than a meaningless fd. */
+    log_info(LD_DIR, "Closing tunneled directory connection (gid %" PRIu64
+             ") that waited too long for a request.", conn->global_identifier);
+    connection_mark_for_close(conn);
+    return;
+  }
+
   /* Expire any directory connections that haven't been active (sent
    * if a server or received if a client) for 5 min */
   if (conn->type == CONN_TYPE_DIR &&

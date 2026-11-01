@@ -1,0 +1,9 @@
+  o Minor features (relay, denial of service):
+    - Add a relay-wide bound on the number of tunneled BEGIN_DIR directory
+      connections waiting for an HTTP request at once, enforced when the stream
+      is admitted and paired with a deadline that reclaims a connection whose
+      request never arrives. This complements the per-circuit BEGIN_DIR
+      defenses from 0.4.9.15 by bounding the relay-wide population those do not.
+      Controlled by three consensus parameters, DoSBeginDirWaitEnabled,
+      DoSBeginDirWaitMax and DoSBeginDirWaitTimeout, and disabled by default;
+      the compiled thresholds are provisional. Closes part of ticket 41339.

@@ -76,6 +76,18 @@ CONF_VAR(DoSBeginDirBurst, POSINT, 0, "0")
  * against it. See the dos_stream_defense_type_t enum. */
 CONF_VAR(DoSBeginDirDefenseType, INT, 0, "0")
 
+/** Autobool: Is the relay-wide bound on tunneled directory connections
+ * waiting for a request enabled? */
+CONF_VAR(DoSBeginDirWaitEnabled, AUTOBOOL, 0, "auto")
+
+/** Maximum number of tunneled directory connections that may be waiting for a
+ * request at once, relay-wide. */
+CONF_VAR(DoSBeginDirWaitMax, POSINT, 0, "0")
+
+/** How long a tunneled directory connection may wait for its request before
+ * it is reclaimed. */
+CONF_VAR(DoSBeginDirWaitTimeout, INTERVAL, 0, "0")
+
 /** For how much time (in seconds) the connection connect rate defense is
 * applicable for a malicious address. A random time delta is added to the
 * defense time of an address which will be between 1 second and half of this

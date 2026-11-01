@@ -222,9 +222,31 @@ void dos_stream_init_circ_tbf(or_circuit_t *circ);
  * pushing more BEGIN_DIR down one. */
 #define DOS_BEGINDIR_BURST_DEFAULT 60
 
+/* DoSBeginDirWaitEnabled default. Disabled by default: like the lifetime
+ * limit, this bound is consensus-driven and meant to be enabled network-wide
+ * rather than on individual relays. */
+#define DOS_BEGINDIR_WAIT_ENABLED_DEFAULT 0
+/* DoSBeginDirWaitMax default: the relay-wide ceiling on tunneled directory
+ * connections waiting for a request. PROVISIONAL test value, not a measured
+ * production threshold; the bound stays off until DoSBeginDirWaitEnabled. */
+#define DOS_BEGINDIR_WAIT_MAX_DEFAULT 1000
+/* DoSBeginDirWaitTimeout default, in seconds: how long a tunneled directory
+ * connection may wait for its request before it is reclaimed. PROVISIONAL
+ * test value, far below TestingDirConnectionMaxStall (300s). */
+#define DOS_BEGINDIR_WAIT_TIMEOUT_DEFAULT 10
+
 bool dos_begindir_should_refuse(or_circuit_t *circ);
 dos_stream_defense_type_t dos_begindir_new_request(or_circuit_t *circ);
 void dos_begindir_init_circ_tbf(or_circuit_t *circ);
+
+struct dir_connection_t;
+bool dos_begindir_wait_should_refuse(void);
+void dos_begindir_wait_add(struct dir_connection_t *dir_conn);
+void dos_begindir_wait_remove(struct dir_connection_t *dir_conn);
+bool dos_begindir_wait_conn_expired(const struct dir_connection_t *dir_conn,
+                                    time_t now);
+uint32_t dos_get_num_begindir_wait(void);
+uint64_t dos_get_num_begindir_wait_rejected(void);
 
 #ifdef DOS_PRIVATE
 
@@ -248,6 +270,12 @@ MOCK_DECL(STATIC unsigned int, get_param_stream_enabled,
 MOCK_DECL(STATIC unsigned int, get_param_begindir_limit_enabled,
           (const networkstatus_t *ns));
 MOCK_DECL(STATIC unsigned int, get_param_begindir_rate_enabled,
+          (const networkstatus_t *ns));
+MOCK_DECL(STATIC unsigned int, get_param_begindir_wait_enabled,
+          (const networkstatus_t *ns));
+MOCK_DECL(STATIC uint32_t, get_param_begindir_wait_max,
+          (const networkstatus_t *ns));
+MOCK_DECL(STATIC uint32_t, get_param_begindir_wait_timeout,
           (const networkstatus_t *ns));
 
 #endif /* defined(DOS_PRIVATE) */

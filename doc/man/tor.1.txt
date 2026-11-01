@@ -3186,6 +3186,32 @@ The following options are useful only for a directory cache.
     controlled by a consensus parameter. If not defined in the consensus, the
     value is 60. (Default: 0)
 
+[[DoSBeginDirWaitEnabled]] **DoSBeginDirWaitEnabled** **0**|**1**|**auto**::
+
+    Enable a relay-wide bound on the number of tunneled directory connections
+    waiting for an HTTP request at once. Unlike the per-circuit BEGIN_DIR
+    defenses, this bounds the total such connections across all circuits. "auto"
+    means use the consensus parameter. If not defined in the consensus, the
+    value is 0 (disabled). This is consensus-driven; like the other DoSBeginDir
+    options, operators normally need not set it. (Default: auto)
+
+[[DoSBeginDirWaitMax]] **DoSBeginDirWaitMax** __NUM__::
+
+    The maximum number of tunneled directory connections that may be waiting
+    for a request at once, relay-wide; a new BEGIN_DIR stream is refused once
+    the count reaches it. If not defined or set to 0, it is controlled by a
+    consensus parameter. If not defined in the consensus, the value is 1000,
+    which is a provisional default rather than a measured production threshold.
+    Only takes effect when DoSBeginDirWaitEnabled is set. (Default: 0)
+
+[[DoSBeginDirWaitTimeout]] **DoSBeginDirWaitTimeout** __N__ **seconds**|**minutes**|**hours**::
+
+    How long a tunneled directory connection may wait for its request before it
+    is reclaimed, so a slow or absent request cannot hold a slot. If not defined
+    or set to 0, it is controlled by a consensus parameter. If not defined in the
+    consensus, the value is 10 seconds, a provisional default. Only takes effect
+    when DoSBeginDirWaitEnabled is set. (Default: 0)
+
 
 For onion services, mitigations are a work in progress and multiple options
 are currently available.

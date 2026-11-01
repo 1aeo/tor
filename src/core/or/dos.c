@@ -29,6 +29,7 @@
 #include "core/or/dos_options_st.h"
 #include "core/or/or_circuit_st.h"
 #include "core/or/or_connection_st.h"
+#include "feature/dircommon/dir_connection_st.h"
 
 /*
  * Circuit creation denial of service mitigation.
@@ -122,6 +123,16 @@ static uint64_t begindir_rate_num_rejected;
 
 /* BEGIN_DIR HSDir requests rejected by the per circuit lifetime limit. */
 static uint64_t begindir_hsdir_num_rejected;
+
+/* Relay-wide bound on tunneled directory connections waiting for a request.
+ * Parameters, the live count of waiting connections, and the cumulative
+ * number of streams refused by the bound. */
+static unsigned int dos_begindir_wait_enabled =
+  DOS_BEGINDIR_WAIT_ENABLED_DEFAULT;
+static uint32_t dos_begindir_wait_max = DOS_BEGINDIR_WAIT_MAX_DEFAULT;
+static uint32_t dos_begindir_wait_timeout = DOS_BEGINDIR_WAIT_TIMEOUT_DEFAULT;
+static uint32_t begindir_wait_count;
+static uint64_t begindir_wait_num_rejected;
 
 /*
  * General interface of the denial of service mitigation subsystem.
@@ -377,6 +388,47 @@ get_param_begindir_defense_type(const networkstatus_t *ns)
                                  DOS_STREAM_DEFENSE_MAX);
 }
 
+/* Return whether the relay-wide BEGIN_DIR command-wait bound is enabled. An
+ * explicit torrc value wins; otherwise the consensus, then the compiled
+ * default (off). */
+MOCK_IMPL(STATIC unsigned int,
+get_param_begindir_wait_enabled, (const networkstatus_t *ns))
+{
+  if (dos_get_options()->DoSBeginDirWaitEnabled != -1) {
+    return dos_get_options()->DoSBeginDirWaitEnabled;
+  }
+  return !!networkstatus_get_param(ns, "DoSBeginDirWaitEnabled",
+                                   DOS_BEGINDIR_WAIT_ENABLED_DEFAULT, 0, 1);
+}
+
+/* Return the relay-wide ceiling on tunneled directory connections waiting for
+ * a request. An explicit torrc value wins; otherwise the consensus, then the
+ * compiled default. */
+MOCK_IMPL(STATIC uint32_t,
+get_param_begindir_wait_max, (const networkstatus_t *ns))
+{
+  if (dos_get_options()->DoSBeginDirWaitMax) {
+    return dos_get_options()->DoSBeginDirWaitMax;
+  }
+  return networkstatus_get_param(ns, "DoSBeginDirWaitMax",
+                                 DOS_BEGINDIR_WAIT_MAX_DEFAULT,
+                                 1, INT32_MAX);
+}
+
+/* Return how long, in seconds, a tunneled directory connection may wait for
+ * its request before it is reclaimed. An explicit torrc value wins; otherwise
+ * the consensus, then the compiled default. */
+MOCK_IMPL(STATIC uint32_t,
+get_param_begindir_wait_timeout, (const networkstatus_t *ns))
+{
+  if (dos_get_options()->DoSBeginDirWaitTimeout) {
+    return dos_get_options()->DoSBeginDirWaitTimeout;
+  }
+  return networkstatus_get_param(ns, "DoSBeginDirWaitTimeout",
+                                 DOS_BEGINDIR_WAIT_TIMEOUT_DEFAULT,
+                                 1, INT32_MAX);
+}
+
 /* Return the parameter for the time rate that is how many stream per circuit
  * over this time span. */
 static uint32_t
@@ -428,6 +480,9 @@ set_dos_begindir_parameters(const networkstatus_t *ns)
   dos_begindir_defense_type = get_param_begindir_defense_type(ns);
   dos_begindir_rate = get_param_begindir_rate(ns);
   dos_begindir_burst = get_param_begindir_burst(ns);
+  dos_begindir_wait_enabled = get_param_begindir_wait_enabled(ns);
+  dos_begindir_wait_max = get_param_begindir_wait_max(ns);
+  dos_begindir_wait_timeout = get_param_begindir_wait_timeout(ns);
 }
 
 /* Set circuit creation parameters located in the consensus or their default
@@ -1080,6 +1135,84 @@ dos_get_num_begindir_hsdir_rejected(void)
   return begindir_hsdir_num_rejected;
 }
 
+/* BEGIN_DIR command-wait bound public API. */
+
+/** Return true iff we should refuse a new tunneled BEGIN_DIR stream because
+ * the relay-wide number of directory connections already waiting for a
+ * request is at the configured maximum. Increments the rejected counter when
+ * it refuses. This is relay-wide and O(1); it takes no circuit and does not
+ * depend on the eventual request type, which is not yet known. */
+bool
+dos_begindir_wait_should_refuse(void)
+{
+  if (!dos_begindir_wait_enabled) {
+    return false;
+  }
+  if (begindir_wait_count < dos_begindir_wait_max) {
+    return false;
+  }
+  ++begindir_wait_num_rejected;
+  return true;
+}
+
+/** Note that <b>dir_conn</b>, a tunneled directory connection, is now waiting
+ * for a request: count it against the relay-wide bound, at most once. */
+void
+dos_begindir_wait_add(dir_connection_t *dir_conn)
+{
+  if (!dos_begindir_wait_enabled || dir_conn->dos_begindir_wait_counted) {
+    return;
+  }
+  dir_conn->dos_begindir_wait_counted = 1;
+  ++begindir_wait_count;
+}
+
+/** Note that <b>dir_conn</b> is no longer waiting for a request (it arrived,
+ * or the connection is closing): release its slot, at most once. This is not
+ * gated on the bound being enabled, so disabling it never leaks a counted
+ * slot. */
+void
+dos_begindir_wait_remove(dir_connection_t *dir_conn)
+{
+  if (!dir_conn->dos_begindir_wait_counted) {
+    return;
+  }
+  dir_conn->dos_begindir_wait_counted = 0;
+  if (!BUG(begindir_wait_count == 0)) {
+    --begindir_wait_count;
+  }
+}
+
+/** Return true iff <b>dir_conn</b> is a tunneled directory connection that is
+ * counted against the command-wait bound and has waited past the timeout, as
+ * of <b>now</b>. The wait is anchored at the connection's creation, so
+ * trickled bytes cannot extend it. Returns false when the bound is disabled.*/
+bool
+dos_begindir_wait_conn_expired(const dir_connection_t *dir_conn, time_t now)
+{
+  if (!dos_begindir_wait_enabled || !dir_conn->dos_begindir_wait_counted) {
+    return false;
+  }
+  return dir_conn->base_.timestamp_created +
+         (time_t) dos_begindir_wait_timeout < now;
+}
+
+/** Return the number of tunneled directory connections currently waiting for
+ * a request. */
+uint32_t
+dos_get_num_begindir_wait(void)
+{
+  return begindir_wait_count;
+}
+
+/** Return the number of tunneled BEGIN_DIR streams refused by the
+ * command-wait bound. */
+uint64_t
+dos_get_num_begindir_wait_rejected(void)
+{
+  return begindir_wait_num_rejected;
+}
+
 /* General API */
 
 /* Take any appropriate actions for the given geoip entry that is about to get
@@ -1287,6 +1420,16 @@ dos_log_heartbeat(void)
                            dos_get_num_begindir_rate_rejected());
   } else {
     smartlist_add_asprintf(elems, "[DoSBeginDirRateEnabled disabled]");
+  }
+
+  if (dos_begindir_wait_enabled) {
+    smartlist_add_asprintf(elems,
+                           "%u BEGIN_DIR currently waiting, %" PRIu64
+                           " BEGIN_DIR waiting rejected",
+                           dos_get_num_begindir_wait(),
+                           dos_get_num_begindir_wait_rejected());
+  } else {
+    smartlist_add_asprintf(elems, "[DoSBeginDirWaitEnabled disabled]");
   }
 
   /* HS DoS stats. */
