@@ -631,6 +631,13 @@ mock_begindir_wait_timeout(const networkstatus_t *ns)
   return 5;
 }
 
+static unsigned int
+mock_begindir_wait_observe(const networkstatus_t *ns)
+{
+  (void) ns;
+  return 1;
+}
+
 /** Test the relay-wide BEGIN_DIR command-wait bound. */
 static void
 test_dos_begindir_wait(void *arg)
@@ -730,6 +737,51 @@ test_dos_begindir_wait(void *arg)
   dos_free_all();
 }
 
+/** Test observe-only mode: the bound counts what it would refuse and reclaim,
+ * but admits every stream and reclaims nothing. */
+static void
+test_dos_begindir_wait_observe(void *arg)
+{
+  dir_connection_t *a = NULL, *b = NULL, *c = NULL;
+  (void) arg;
+
+  a = dir_connection_new(AF_INET);
+  b = dir_connection_new(AF_INET);
+  c = dir_connection_new(AF_INET);
+
+  MOCK(get_param_begindir_wait_enabled, mock_enable_dos_protection);
+  MOCK(get_param_begindir_wait_observe, mock_begindir_wait_observe);
+  MOCK(get_param_begindir_wait_max, mock_begindir_wait_max);
+  MOCK(get_param_begindir_wait_timeout, mock_begindir_wait_timeout);
+  dos_init();
+
+  /* Fill to the max (2); streams are still counted while observing. */
+  dos_begindir_wait_add(a);
+  dos_begindir_wait_add(b);
+  tt_uint_op(dos_get_num_begindir_wait(), OP_EQ, 2);
+
+  /* At the max, should_refuse() counts the would-be refusal but admits. */
+  tt_assert(!dos_begindir_wait_should_refuse());
+  tt_u64_op(dos_get_num_begindir_wait_rejected(), OP_EQ, 1);
+  tt_assert(!dos_begindir_wait_should_refuse());
+  tt_u64_op(dos_get_num_begindir_wait_rejected(), OP_EQ, 2);
+
+  /* A counted connection past the timeout is NOT reclaimed while observing. */
+  dos_begindir_wait_add(c);
+  c->base_.timestamp_created = 1000;
+  tt_assert(!dos_begindir_wait_conn_expired(c, 1000 + 600));
+
+ done:
+  UNMOCK(get_param_begindir_wait_enabled);
+  UNMOCK(get_param_begindir_wait_observe);
+  UNMOCK(get_param_begindir_wait_max);
+  UNMOCK(get_param_begindir_wait_timeout);
+  if (a) connection_free_(TO_CONN(a));
+  if (b) connection_free_(TO_CONN(b));
+  if (c) connection_free_(TO_CONN(c));
+  dos_free_all();
+}
+
 struct testcase_t dos_tests[] = {
   { "conn_creation", test_dos_conn_creation, TT_FORK, NULL, NULL },
   { "circuit_creation", test_dos_circuit_creation, TT_FORK, NULL, NULL },
@@ -739,5 +791,7 @@ struct testcase_t dos_tests[] = {
   { "conn_rate", test_dos_conn_rate, TT_FORK, NULL, NULL },
   { "begindir_limit", test_dos_begindir_limit, TT_FORK, NULL, NULL },
   { "begindir_wait", test_dos_begindir_wait, TT_FORK, NULL, NULL },
+  { "begindir_wait_observe", test_dos_begindir_wait_observe, TT_FORK,
+    NULL, NULL },
   END_OF_TESTCASES
 };

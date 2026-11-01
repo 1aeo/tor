@@ -88,6 +88,11 @@ CONF_VAR(DoSBeginDirWaitMax, POSINT, 0, "0")
  * it is reclaimed. */
 CONF_VAR(DoSBeginDirWaitTimeout, INTERVAL, 0, "0")
 
+/** Autobool: when the wait bound is enabled, only count the streams it would
+ * refuse and the connections it would reclaim, without actually refusing or
+ * reclaiming any. For calibrating the bound on live traffic. */
+CONF_VAR(DoSBeginDirWaitObserveOnly, AUTOBOOL, 0, "auto")
+
 /** For how much time (in seconds) the connection connect rate defense is
 * applicable for a malicious address. A random time delta is added to the
 * defense time of an address which will be between 1 second and half of this

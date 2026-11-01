@@ -3212,6 +3212,15 @@ The following options are useful only for a directory cache.
     consensus, the value is 10 seconds, a provisional default. Only takes effect
     when DoSBeginDirWaitEnabled is set. (Default: 0)
 
+[[DoSBeginDirWaitObserveOnly]] **DoSBeginDirWaitObserveOnly** **0**|**1**|**auto**::
+
+    When the wait bound is enabled, only count the streams it would refuse and
+    the connections it would reclaim (visible on the heartbeat and as
+    tor_relay_dos_total), without actually refusing or reclaiming any. This lets
+    the bound be calibrated against live traffic before it enforces. "auto"
+    means use the consensus parameter. If not defined in the consensus, the
+    value is 0 (enforce when enabled). (Default: auto)
+
 
 For onion services, mitigations are a work in progress and multiple options
 are currently available.

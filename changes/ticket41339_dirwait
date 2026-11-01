@@ -4,6 +4,8 @@
       is admitted and paired with a deadline that reclaims a connection whose
       request never arrives. This complements the per-circuit BEGIN_DIR
       defenses from 0.4.9.15 by bounding the relay-wide population those do not.
-      Controlled by three consensus parameters, DoSBeginDirWaitEnabled,
-      DoSBeginDirWaitMax and DoSBeginDirWaitTimeout, and disabled by default;
-      the compiled thresholds are provisional. Closes part of ticket 41339.
+      Controlled by consensus parameters, DoSBeginDirWaitEnabled,
+      DoSBeginDirWaitMax, DoSBeginDirWaitTimeout and an observe-only mode
+      (DoSBeginDirWaitObserveOnly) for calibrating the bound on live traffic,
+      and disabled by default; the compiled thresholds are provisional. Closes
+      part of ticket 41339.

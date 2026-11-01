@@ -234,6 +234,9 @@ void dos_stream_init_circ_tbf(or_circuit_t *circ);
  * connection may wait for its request before it is reclaimed. PROVISIONAL
  * test value, far below TestingDirConnectionMaxStall (300s). */
 #define DOS_BEGINDIR_WAIT_TIMEOUT_DEFAULT 10
+/* DoSBeginDirWaitObserveOnly default. Off: when the bound is enabled it
+ * enforces. Set it to count-without-acting while calibrating. */
+#define DOS_BEGINDIR_WAIT_OBSERVE_DEFAULT 0
 
 bool dos_begindir_should_refuse(or_circuit_t *circ);
 dos_stream_defense_type_t dos_begindir_new_request(or_circuit_t *circ);
@@ -272,6 +275,8 @@ MOCK_DECL(STATIC unsigned int, get_param_begindir_limit_enabled,
 MOCK_DECL(STATIC unsigned int, get_param_begindir_rate_enabled,
           (const networkstatus_t *ns));
 MOCK_DECL(STATIC unsigned int, get_param_begindir_wait_enabled,
+          (const networkstatus_t *ns));
+MOCK_DECL(STATIC unsigned int, get_param_begindir_wait_observe,
           (const networkstatus_t *ns));
 MOCK_DECL(STATIC uint32_t, get_param_begindir_wait_max,
           (const networkstatus_t *ns));

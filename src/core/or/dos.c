@@ -129,6 +129,8 @@ static uint64_t begindir_hsdir_num_rejected;
  * number of streams refused by the bound. */
 static unsigned int dos_begindir_wait_enabled =
   DOS_BEGINDIR_WAIT_ENABLED_DEFAULT;
+static unsigned int dos_begindir_wait_observe =
+  DOS_BEGINDIR_WAIT_OBSERVE_DEFAULT;
 static uint32_t dos_begindir_wait_max = DOS_BEGINDIR_WAIT_MAX_DEFAULT;
 static uint32_t dos_begindir_wait_timeout = DOS_BEGINDIR_WAIT_TIMEOUT_DEFAULT;
 static uint32_t begindir_wait_count;
@@ -401,6 +403,19 @@ get_param_begindir_wait_enabled, (const networkstatus_t *ns))
                                    DOS_BEGINDIR_WAIT_ENABLED_DEFAULT, 0, 1);
 }
 
+/* Return whether the wait bound should only count, not act (observe mode). An
+ * explicit torrc value wins; otherwise the consensus, then the compiled
+ * default (off, i.e. enforce when enabled). */
+MOCK_IMPL(STATIC unsigned int,
+get_param_begindir_wait_observe, (const networkstatus_t *ns))
+{
+  if (dos_get_options()->DoSBeginDirWaitObserveOnly != -1) {
+    return dos_get_options()->DoSBeginDirWaitObserveOnly;
+  }
+  return !!networkstatus_get_param(ns, "DoSBeginDirWaitObserveOnly",
+                                   DOS_BEGINDIR_WAIT_OBSERVE_DEFAULT, 0, 1);
+}
+
 /* Return the relay-wide ceiling on tunneled directory connections waiting for
  * a request. An explicit torrc value wins; otherwise the consensus, then the
  * compiled default. */
@@ -481,6 +496,7 @@ set_dos_begindir_parameters(const networkstatus_t *ns)
   dos_begindir_rate = get_param_begindir_rate(ns);
   dos_begindir_burst = get_param_begindir_burst(ns);
   dos_begindir_wait_enabled = get_param_begindir_wait_enabled(ns);
+  dos_begindir_wait_observe = get_param_begindir_wait_observe(ns);
   dos_begindir_wait_max = get_param_begindir_wait_max(ns);
   dos_begindir_wait_timeout = get_param_begindir_wait_timeout(ns);
 }
@@ -1140,8 +1156,9 @@ dos_get_num_begindir_hsdir_rejected(void)
 /** Return true iff we should refuse a new tunneled BEGIN_DIR stream because
  * the relay-wide number of directory connections already waiting for a
  * request is at the configured maximum. Increments the rejected counter when
- * it refuses. This is relay-wide and O(1); it takes no circuit and does not
- * depend on the eventual request type, which is not yet known. */
+ * it refuses (or, in observe-only mode, when it would have). This is
+ * relay-wide and O(1); it takes no circuit and does not depend on the eventual
+ * request type, which is not yet known. */
 bool
 dos_begindir_wait_should_refuse(void)
 {
@@ -1152,7 +1169,9 @@ dos_begindir_wait_should_refuse(void)
     return false;
   }
   ++begindir_wait_num_rejected;
-  return true;
+  /* Observe-only: count the stream we would have refused, but admit it, so the
+   * bound can be calibrated on live traffic without dropping anything. */
+  return !dos_begindir_wait_observe;
 }
 
 /** Note that <b>dir_conn</b>, a tunneled directory connection, is now waiting
@@ -1186,11 +1205,13 @@ dos_begindir_wait_remove(dir_connection_t *dir_conn)
 /** Return true iff <b>dir_conn</b> is a tunneled directory connection that is
  * counted against the command-wait bound and has waited past the timeout, as
  * of <b>now</b>. The wait is anchored at the connection's creation, so
- * trickled bytes cannot extend it. Returns false when the bound is disabled.*/
+ * trickled bytes cannot extend it. Returns false when the bound is disabled or
+ * is only observing (observe-only mode reclaims nothing). */
 bool
 dos_begindir_wait_conn_expired(const dir_connection_t *dir_conn, time_t now)
 {
-  if (!dos_begindir_wait_enabled || !dir_conn->dos_begindir_wait_counted) {
+  if (!dos_begindir_wait_enabled || dos_begindir_wait_observe ||
+      !dir_conn->dos_begindir_wait_counted) {
     return false;
   }
   return dir_conn->base_.timestamp_created +
@@ -1425,9 +1446,10 @@ dos_log_heartbeat(void)
   if (dos_begindir_wait_enabled) {
     smartlist_add_asprintf(elems,
                            "%u BEGIN_DIR currently waiting, %" PRIu64
-                           " BEGIN_DIR waiting rejected",
+                           " BEGIN_DIR waiting rejected%s",
                            dos_get_num_begindir_wait(),
-                           dos_get_num_begindir_wait_rejected());
+                           dos_get_num_begindir_wait_rejected(),
+                           dos_begindir_wait_observe ? " (observe only)" : "");
   } else {
     smartlist_add_asprintf(elems, "[DoSBeginDirWaitEnabled disabled]");
   }
