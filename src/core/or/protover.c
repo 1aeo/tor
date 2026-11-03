@@ -523,10 +523,10 @@ protover_get_required_client_protocols(void)
 {
   return
     "Cons=2 "
-    "Desc=2-3 "
+    "Desc=2 "
     "FlowCtrl=1 "
     "Link=4 "
-    "Microdesc=2-3 "
+    "Microdesc=2 "
     "Relay=2";
 }
 
@@ -537,7 +537,7 @@ protover_get_required_relay_protocols(void)
 {
   return
     "Cons=2 "
-    "Desc=2-3 "
+    "Desc=2 "
     "DirCache=2 "
     "FlowCtrl=1-2 "
     "HSDir=2 "
@@ -545,8 +545,8 @@ protover_get_required_relay_protocols(void)
     "HSRend=2 "
     "Link=4-5 "
     "LinkAuth=3 "
-    "Microdesc=2-3 "
-    "Relay=2-6";
+    "Microdesc=2 "
+    "Relay=2-4";
 }
 
 /*
