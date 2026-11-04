@@ -296,6 +296,7 @@ check-local:					\
 	check-spaces				\
 	check-changes				\
 	check-includes				\
+	check-metrics-dict			\
 	shellcheck
 
 # test-network requires a copy of Chutney in $CHUTNEY_PATH.
@@ -591,6 +592,13 @@ if USEPYTHON
 	@if test -d "$(top_srcdir)/changes"; then \
 		PACKAGE_VERSION=$(PACKAGE_VERSION) $(PYTHON) $(top_srcdir)/scripts/maint/lintChanges.py $(top_srcdir)/changes; \
 		fi
+endif
+
+# Keep the MetricsPort zstd dictionary aligned with the metric tables.
+.PHONY: check-metrics-dict
+check-metrics-dict:
+if USEPYTHON
+	$(PYTHON) $(top_srcdir)/contrib/operator-tools/metrics-zstd-dict.py --check
 endif
 
 .PHONY: update-versions

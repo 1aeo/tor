@@ -42,6 +42,18 @@ shouldn't assume you're the origin for the traffic that you're delivering.
 tor.logrotate is a configuration file for use with the logrotate tool.  You
 may need to edit it to work for you.
 
+metrics-zstd-dict.py prints every MetricsPort line with the sample value
+removed, including onion-service series a relay omits when it hosts no
+service.  metrics-zstd.dict is that text for one placeholder onion address
+and virtual port 80.  Feed it to zstd as a raw dictionary:
+
+    zstd -D metrics-zstd.dict scrape.prom
+
+Pass --onion and --port to the script so the dictionary contains the
+addresses and ports your relay actually exports.  Run
+metrics-zstd-dict.py --check after editing the metrics tables; it fails
+if metrics-zstd.dict is stale.
+
 linux-tor-prio.sh uses Linux iptables tools to traffic-shape your Tor relay's
 traffic. If it breaks, you get to keep both pieces.
 

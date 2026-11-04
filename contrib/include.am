@@ -3,6 +3,8 @@ EXTRA_DIST+= \
 	contrib/README					\
 	contrib/client-tools/torify			\
 	contrib/operator-tools/tor-exit-notice.html	\
+	contrib/operator-tools/metrics-zstd-dict.py	\
+	contrib/operator-tools/metrics-zstd.dict	\
 	contrib/or-tools/exitlist			\
 	contrib/win32build/tor-mingw.nsi.in		\
 	contrib/win32build/tor.ico			\

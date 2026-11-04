@@ -1,0 +1,7 @@
+  o Minor features (metrics):
+    - Add a tool that prints every MetricsPort line with the sample value
+      removed, including series a relay does not currently export (for
+      example onion-service metrics). The tool is
+      contrib/operator-tools/metrics-zstd-dict.py. The default output,
+      using a placeholder onion address, is shipped as
+      contrib/operator-tools/metrics-zstd.dict.
