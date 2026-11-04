@@ -1,3 +1,0 @@
-  o Minor bugfixes (dirauth):
-    - Let dir auth fetches be twice as big, to allow for the fact that 9 votes
-      can exceed 16MB even compressed. Part of 41471; bugfix on 0.3.5.1-alpha.

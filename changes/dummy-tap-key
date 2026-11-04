@@ -1,7 +1,0 @@
-  o Major features (authority):
-    - Work around a bug where old clients did not, in fact, correctly
-      handle unparseable microdescriptors in the way that we had hoped
-      that they would.  We triggered this bug by omitting TAP keys from
-      microdescriptors.  To solve this issue, instead of omitting TAP
-      keys, we replace them with a dummy TAP key.  (This is safe,
-      because nothing has used TAP since v2 onion services.)
