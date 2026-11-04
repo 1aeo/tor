@@ -1,0 +1,6 @@
+  o Minor bugfixes (logging, security):
+    - Avoid logging invalid contents from misformed hsv3 authentication key
+      files when SafeLogging is set.
+      Doing so could inadvertantly copy key fragments into the logs,
+      depending on why the contents were invalid.
+      Fixes bug 41321; bugfix on 0.3.5.1-alpha.
