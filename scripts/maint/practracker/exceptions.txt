@@ -75,7 +75,7 @@ problem dependency-violation /src/core/mainloop/connection.c 47
 problem dependency-violation /src/core/mainloop/cpuworker.c 12
 problem include-count /src/core/mainloop/mainloop.c 64
 problem function-size /src/core/mainloop/mainloop.c:conn_close_if_marked() 107
-problem function-size /src/core/mainloop/mainloop.c:run_connection_housekeeping() 123
+problem function-size /src/core/mainloop/mainloop.c:run_connection_housekeeping() 124
 problem dependency-violation /src/core/mainloop/mainloop.c 50
 problem dependency-violation /src/core/mainloop/mainloop_pubsub.c 1
 problem dependency-violation /src/core/mainloop/mainloop_sys.c 1

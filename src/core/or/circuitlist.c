@@ -2182,6 +2182,24 @@ circuit_synchronize_written_or_bandwidth(const circuit_t *c,
   bwhist_note_bytes_written(written_sync, time(NULL), is_ipv6);
 }
 
+/** Tell the directory connections tunneled over the OR circuit <b>circ</b>,
+ * which we are closing for <b>reason</b> (an END_CIRC_REASON_*, without
+ * END_CIRC_REASON_FLAG_REMOTE), why their circuit is closing. Those whose
+ * stream we are closing already, or that noted a cause, keep theirs. */
+static void
+circuit_note_dir_streams_closing(or_circuit_t *circ, int reason)
+{
+  if (!circ->dir_close_reason)
+    circ->dir_close_reason =
+      reason == END_CIRC_REASON_DESTROYED ? DIR_CLOSE_DESTROY_CELL :
+      reason == END_CIRC_REASON_CHANNEL_CLOSED ? DIR_CLOSE_CHANNEL_CLOSED :
+      reason == END_CIRC_REASON_TORPROTOCOL ? DIR_CLOSE_PROTOCOL :
+      DIR_CLOSE_OTHER;
+  for (edge_connection_t *s = circ->n_streams; s; s = s->next_stream)
+    if (!TO_CONN(s)->marked_for_close)
+      connection_dir_note_close_reason(TO_CONN(s), circ->dir_close_reason);
+}
+
 /** Mark <b>circ</b> to be closed next time we call
  * circuit_close_all_marked(). Do any cleanup needed:
  *   - If state is CHAN_WAIT, remove circ from circuits_pending_chans.
@@ -2282,6 +2300,7 @@ circuit_mark_for_close_, (circuit_t *circ, int reason, int line,
 
   if (!CIRCUIT_IS_ORIGIN(circ)) {
     or_circuit_t *or_circ = TO_OR_CIRCUIT(circ);
+    circuit_note_dir_streams_closing(or_circ, reason);
     if (or_circ->rend_splice) {
       if (!or_circ->rend_splice->base_.marked_for_close) {
         /* do this after marking this circuit, to avoid infinite recursion. */
@@ -2779,6 +2798,7 @@ circuits_handle_oom(size_t current_allocation)
         if (!conn->marked_for_close) {
           if (CONN_IS_EDGE(conn)) {
             TO_EDGE_CONN(conn)->end_reason = END_STREAM_REASON_RESOURCELIMIT;
+            connection_dir_note_close_reason(conn, DIR_CLOSE_OOM);
           }
           connection_mark_for_close(conn);
         }
@@ -2800,6 +2820,8 @@ circuits_handle_oom(size_t current_allocation)
     n = n_cells_in_circ_queues(circ);
     const size_t half_stream_alloc = circuit_alloc_in_half_streams(circ);
     if (! circ->marked_for_close) {
+      if (! CIRCUIT_IS_ORIGIN(circ))
+        TO_OR_CIRCUIT(circ)->dir_close_reason = DIR_CLOSE_OOM;
       circuit_mark_for_close(circ, END_CIRC_REASON_RESOURCELIMIT);
     }
     marked_circuit_free_cells(circ);

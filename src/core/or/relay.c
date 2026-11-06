@@ -1726,6 +1726,7 @@ handle_relay_msg(const relay_msg_t *msg, circuit_t *circ,
       if (sendme_stream_data_received(conn) < 0) {
         log_fn(LOG_PROTOCOL_WARN, LD_PROTOCOL,
                "(relay data) conn deliver_window below 0. Killing.");
+        connection_dir_note_close_reason(TO_CONN(conn), DIR_CLOSE_PROTOCOL);
         connection_edge_end_close(conn, END_STREAM_REASON_TORPROTOCOL);
         return -END_CIRC_REASON_TORPROTOCOL;
       }
@@ -1851,6 +1852,7 @@ handle_relay_msg(const relay_msg_t *msg, circuit_t *circ,
       if (!conn->base_.marked_for_close) {
         /* only mark it if not already marked. it's possible to
          * get the 'end' right around when the client hangs up on us. */
+        connection_dir_note_close_reason(TO_CONN(conn), DIR_CLOSE_END_CELL);
         connection_mark_and_flush(TO_CONN(conn));
 
         /* Total all valid application bytes delivered */
@@ -3490,6 +3492,9 @@ append_cell_to_circuit_queue(circuit_t *circ, channel_t *chan,
            (exitward) ? "Outbound" : "Inbound", queue->n,
            max_queue_size);
     stats_n_circ_max_cell_reached++;
+    /* Our callers close it, for a reason that doesn't always say why. */
+    if (CIRCUIT_IS_ORCIRC(circ))
+      TO_OR_CIRCUIT(circ)->dir_close_reason = DIR_CLOSE_CELL_QUEUE_FULL;
     return -1;
   }
 

@@ -4258,6 +4258,7 @@ connection_exit_begin_conn(const relay_msg_t *msg, circuit_t *circ)
                                       END_STREAM_REASON_MISC, layer_hint);
         return 0;
       case DOS_STREAM_DEFENSE_CLOSE_CIRCUIT:
+        or_circ->dir_close_reason = DIR_CLOSE_BEGINDIR_RATE;
         return -END_CIRC_REASON_RESOURCELIMIT;
     }
     if (dos_begindir_should_refuse(or_circ)) {

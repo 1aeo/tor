@@ -827,8 +827,9 @@ test_dos_create_cell_prev_hop(void *arg)
 }
 
 /** Test that connection_exit_begin_conn() counts every BEGIN_DIR cell by its
- * place on its circuit, also those that tor refuses, and that the directory
- * connections it opens know the circuit's previous hop. */
+ * place on its circuit, also those that tor refuses, that the directory
+ * connections it opens know the circuit's previous hop, and that closing the
+ * circuit, the default defense, tells them why. */
 static void
 test_dos_begindir_refused(void *arg)
 {
@@ -866,6 +867,8 @@ test_dos_begindir_refused(void *arg)
   tt_int_op(n_end, OP_EQ, 1);
   tt_int_op(end_reason, OP_EQ, END_STREAM_REASON_MISC);
   tt_u64_op(dos_get_num_begindir_rate_rejected(), OP_EQ, 1);
+  /* Refusing a stream doesn't close the circuit. */
+  tt_int_op(circ->dir_close_reason, OP_EQ, DIR_CLOSE_UNKNOWN);
   /* Two linked pairs, whose directory connections know the previous hop. */
   tt_int_op(smartlist_len(get_connection_array()), OP_EQ, 4);
   SMARTLIST_FOREACH(get_connection_array(), connection_t *, c, {
@@ -893,6 +896,19 @@ test_dos_begindir_refused(void *arg)
   hibernating = 0;
   tt_u64_op(rep_hist_get_begindir_cells(hop)[NTH_BAND_2_10], OP_EQ, 4);
   tt_int_op(n_connected, OP_EQ, 2);
+
+  /* The bucket is still empty, and by default the rate limit closes the
+   * circuit, which tells the directory connections of its streams why. */
+  dos_opts->DoSBeginDirRateEnabled = 1;
+  dos_opts->DoSBeginDirDefenseType = 0;
+  dos_init();
+  tt_int_op(connection_exit_begin_conn(&msg, TO_CIRCUIT(circ)), OP_EQ,
+            -END_CIRC_REASON_RESOURCELIMIT);
+  circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_RESOURCELIMIT);
+  SMARTLIST_FOREACH(get_connection_array(), connection_t *, c, {
+    if (c->type == CONN_TYPE_DIR)
+      tt_int_op(TO_DIR_CONN(c)->close_reason, OP_EQ, DIR_CLOSE_BEGINDIR_RATE);
+  });
 
  done:
   UNMOCK(relay_send_command_from_edge_);

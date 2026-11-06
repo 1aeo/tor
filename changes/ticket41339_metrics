@@ -60,3 +60,10 @@
       HSDirRefuseUnknownPrevHop treats these as known: the count shows how much
       traffic comes from relays that recently left the consensus. Part of
       ticket 41339.
+    - Count the tunneled directory requests of types "no_request" and
+      "circuit_dead" by the first cause we noted for their closing, as
+      tor_relay_begindir_close_reason_total{type,prev_hop,reason}: a
+      RELAY_END, a DESTROY, a closed channel, a protocol violation, the
+      BEGIN_DIR rate limit, an onion service request defense, a full cell
+      queue, the out-of-memory handler, a stall, or another reason closing
+      its circuit. Part of ticket 41339.

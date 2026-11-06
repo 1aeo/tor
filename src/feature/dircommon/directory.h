@@ -101,6 +101,8 @@ int connection_dir_process_inbuf(dir_connection_t *conn);
 int connection_dir_finished_flushing(dir_connection_t *conn);
 int connection_dir_finished_connecting(dir_connection_t *conn);
 void connection_dir_about_to_close(dir_connection_t *dir_conn);
+void connection_dir_note_close_reason(connection_t *conn,
+                                      dir_close_reason_t reason);
 
 #define DSR_HEX       (1<<0)
 #define DSR_BASE64    (1<<1)

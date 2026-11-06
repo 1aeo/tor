@@ -1266,6 +1266,7 @@ run_connection_housekeeping(int i, time_t now)
                "download.");
       connection_dir_reached_eof(TO_DIR_CONN(conn));
     } else {
+      connection_dir_note_close_reason(conn, DIR_CLOSE_TIMEOUT);
       connection_mark_for_close(conn);
     }
     return;

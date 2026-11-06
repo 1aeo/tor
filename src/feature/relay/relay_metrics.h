@@ -88,6 +88,9 @@ typedef enum {
   /** Onion service descriptor fetches, by whether we found the descriptor
    * and place among the fetches of the same one in the same minute. */
   RELAY_METRICS_NUM_HSDIR_FETCH_DESCRIPTORS,
+  /** Tunneled directory requests we closed without reading, by type,
+   * previous hop and the first cause their connection noted. */
+  RELAY_METRICS_NUM_BEGINDIR_CLOSE_REASONS,
 } relay_metrics_key_t;
 
 /** The metadata of a relay metric. */

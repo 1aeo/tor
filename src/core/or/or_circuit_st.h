@@ -118,6 +118,9 @@ struct or_circuit_t {
   /** Number of BEGIN_DIR cells received on this circuit, stopping at
    * NTH_BAND_MAX. */
   unsigned int n_begindir : 10;
+  /** Why we close this circuit, for its tunneled directory streams: a
+   * dir_close_reason_t, set right before or when we mark it for close. */
+  unsigned int dir_close_reason : 4;
 
   /** INTRODUCE2 cell bucket controlling how much can go on this circuit. Only
    * used if this is a service introduction circuit at the intro point

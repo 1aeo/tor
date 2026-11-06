@@ -1425,6 +1425,7 @@ hsdir_request_allowed_on_circuit(dir_connection_t *conn)
 
   if (circ->already_received_hsdir_request) {
     dos_note_begindir_hsdir_rejected();
+    circ->dir_close_reason = DIR_CLOSE_HSDIR_SECOND_REQUEST;
     circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_TORPROTOCOL);
     return false;
   }
@@ -1460,6 +1461,7 @@ allow_hs_dir_request(dir_connection_t *conn)
   log_fn_ratelim(&prev_hop_lim, LOG_PROTOCOL_WARN, LD_REND,
                  "Refusing an onion service directory request from unknown "
                  "relay %s.", safe_str(channel_describe_peer(circ->p_chan)));
+  circ->dir_close_reason = DIR_CLOSE_HSDIR_UNKNOWN_PREV_HOP;
   circuit_mark_for_close(TO_CIRCUIT(circ), END_CIRC_REASON_RESOURCELIMIT);
   return false;
 }
@@ -1523,9 +1525,9 @@ handle_get_hs_descriptor_v3(dir_connection_t *conn,
                    "Closing a circuit that fetched an onion service "
                    "descriptor while we are over HSDirFetchBudget.");
     relay_increment_hsdir_get_action(HSDIR_GET_REFUSED);
-    circuit_mark_for_close(
-                       TO_EDGE_CONN(TO_CONN(conn)->linked_conn)->on_circuit,
-                       END_CIRC_REASON_RESOURCELIMIT);
+    circuit_t *circ = TO_EDGE_CONN(TO_CONN(conn)->linked_conn)->on_circuit;
+    TO_OR_CIRCUIT(circ)->dir_close_reason = DIR_CLOSE_HSDIR_FETCH_SHED;
+    circuit_mark_for_close(circ, END_CIRC_REASON_RESOURCELIMIT);
     goto done;
   }
 

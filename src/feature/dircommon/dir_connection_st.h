@@ -37,6 +37,9 @@ struct dir_connection_t {
   /** For a tunneled (BEGIN_DIR) server connection: 0 until its request is
    * counted, then one more than its dir_request_type_t. */
   unsigned int request_type:4;
+  /** For a tunneled (BEGIN_DIR) server connection: the first cause we
+   * noted of its closing, a dir_close_reason_t. */
+  unsigned int close_reason:4;
 
   /** If we're fetching descriptors, what router purpose shall we assign
    * to them? */

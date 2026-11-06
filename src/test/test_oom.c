@@ -12,9 +12,11 @@
 #include "core/or/circuitlist.h"
 #include "lib/evloop/compat_libevent.h"
 #include "core/mainloop/connection.h"
+#include "core/mainloop/mainloop.h"
 #include "app/config/config.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "core/or/relay.h"
+#include "core/or/connection_edge.h"
 #include "test/test.h"
 #include "test/test_helpers.h"
 
@@ -22,6 +24,10 @@
 #include "core/or/entry_connection_st.h"
 #include "core/or/or_circuit_st.h"
 #include "core/or/origin_circuit_st.h"
+#include "feature/dircommon/dir_connection_st.h"
+
+/* The dir_close_reason of the last OR circuit marked, when it was marked. */
+static int dir_close_reason_at_mark = -1;
 
 /* small replacement mock for circuit_mark_for_close_ to avoid doing all
  * the other bookkeeping that comes with marking circuits. */
@@ -39,6 +45,8 @@ circuit_mark_for_close_dummy_(circuit_t *circ, int reason, int line,
 
   circ->marked_for_close = line;
   circ->marked_for_close_file = file;
+  if (!CIRCUIT_IS_ORIGIN(circ))
+    dir_close_reason_at_mark = TO_OR_CIRCUIT(circ)->dir_close_reason;
 }
 
 static circuit_t *
@@ -343,6 +351,8 @@ test_oom_streambuf(void *arg)
   tt_assert(! c3->marked_for_close);
   tt_assert(c4->marked_for_close);
   tt_assert(! c5->marked_for_close);
+  /* Noting why, for its tunneled directory streams. */
+  tt_int_op(dir_close_reason_at_mark, OP_EQ, DIR_CLOSE_OOM);
 
   tt_int_op(cell_queues_get_total_allocation(), OP_EQ,
             packed_cell_mem_cost() * 85);
@@ -363,8 +373,72 @@ test_oom_streambuf(void *arg)
   monotime_disable_test_mocking();
 }
 
+/* Mark <b>conn</b> for close without the rest of the bookkeeping. */
+static void
+connection_mark_for_close_dummy_(connection_t *conn, int line,
+                                 const char *file)
+{
+  (void) line;
+  (void) file;
+  conn->marked_for_close = 1;
+}
+
+/** Test that when the OOM handler closes the stream of a tunneled directory
+ * connection waiting for its request, the directory connection notes why. */
+static void
+test_oom_dir_close_reason(void *arg)
+{
+  or_options_t *options = get_options_mutable();
+  circuit_t *circ = NULL;
+  edge_connection_t *edge = NULL;
+  dir_connection_t *dirconn = NULL;
+  const uint64_t start_ns = 1389641159 * (uint64_t)1000000000;
+  (void) arg;
+
+  monotime_enable_test_mocking();
+  monotime_coarse_set_mock_time_nsec(start_ns);
+  MOCK(circuit_mark_for_close_, circuit_mark_for_close_dummy_);
+  MOCK(connection_mark_for_close_internal_, connection_mark_for_close_dummy_);
+  tor_init_connection_lists();
+  options->CellStatistics = 0;
+
+  /* An exit stream with data on its buffers, linked to a directory
+   * connection with none, on a circuit with no cells. */
+  circ = dummy_or_circuit_new(0, 0);
+  edge = dummy_edge_conn_new(circ, CONN_TYPE_EXIT, 1000, 1000);
+  TO_CONN(edge)->purpose = EXIT_PURPOSE_CONNECT;
+  TO_CONN(edge)->state = EXIT_CONN_STATE_OPEN;
+  dirconn = dir_connection_new(AF_INET);
+  connection_link_connections(TO_CONN(dirconn), TO_CONN(edge));
+  tt_int_op(connection_add(TO_CONN(edge)), OP_EQ, 0);
+
+  /* Just over the limit: freeing the stream's buffers is enough, so its
+   * circuit stays open. */
+  monotime_coarse_set_mock_time_nsec(start_ns + 1000 * 1000000);
+  options->MaxMemInQueues = buf_get_total_allocation() - 1;
+  tt_int_op(cell_queues_check_size(), OP_EQ, 1);
+  cell_queues_reclaim_memory();
+  tt_assert(TO_CONN(edge)->marked_for_close);
+  tt_int_op(dirconn->close_reason, OP_EQ, DIR_CLOSE_OOM);
+  tt_assert(! circ->marked_for_close);
+  tt_int_op(TO_OR_CIRCUIT(circ)->dir_close_reason, OP_EQ, DIR_CLOSE_UNKNOWN);
+
+ done:
+  if (edge)
+    connection_remove(TO_CONN(edge));
+  circuit_free(circ);
+  if (edge)
+    connection_free_minimal(TO_CONN(edge));
+  if (dirconn)
+    connection_free_minimal(TO_CONN(dirconn));
+  UNMOCK(circuit_mark_for_close_);
+  UNMOCK(connection_mark_for_close_internal_);
+  monotime_disable_test_mocking();
+}
+
 struct testcase_t oom_tests[] = {
   { "circbuf", test_oom_circbuf, TT_FORK, NULL, NULL },
   { "streambuf", test_oom_streambuf, TT_FORK, NULL, NULL },
+  { "dir_close_reason", test_oom_dir_close_reason, TT_FORK, NULL, NULL },
   END_OF_TESTCASES
 };

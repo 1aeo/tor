@@ -85,6 +85,7 @@ static void fill_begindir_response_bytes_values(void);
 static void fill_create_cell_source_values(void);
 static void fill_begindir_cell_source_values(void);
 static void fill_hsdir_fetch_descriptor_values(void);
+static void fill_begindir_close_reason_values(void);
 
 /** The base metrics that is a static array of metrics added to the metrics
  * store.
@@ -341,6 +342,14 @@ static const relay_metrics_entry_t base_metrics[] =
             "place among the fetches of the same descriptor in the same "
             "minute",
     .fill_fn = fill_hsdir_fetch_descriptor_values,
+  },
+  {
+    .key = RELAY_METRICS_NUM_BEGINDIR_CLOSE_REASONS,
+    .type = METRICS_TYPE_COUNTER,
+    .name = METRICS_NAME(relay_begindir_close_reason_total),
+    .help = "Total number of tunneled directory streams we closed without "
+            "reading a request, by the first cause we noted",
+    .fill_fn = fill_begindir_close_reason_values,
   },
 };
 static const size_t num_base_metrics = ARRAY_LENGTH(base_metrics);
@@ -1433,9 +1442,36 @@ static const char *const dir_request_names[] = {
  * bits. */
 CTASSERT(DIR_REQUEST_TYPE_COUNT < 16);
 
+/** Tunneled directory requests we closed without reading, of the last two
+ * types (no_request and circuit_dead), by type, the previous hop of their
+ * circuit, and the first cause their connection noted of its closing. */
+static uint64_t dir_close_reasons[2][CHANNEL_PREV_HOP_COUNT]
+                                 [DIR_CLOSE_REASON_COUNT];
+CTASSERT(DIR_REQUEST_NO_REQUEST + 2 == DIR_REQUEST_TYPE_COUNT);
+/** Label values for a dir_close_reason_t. */
+static const char *const dir_close_reason_names[] = {
+  [DIR_CLOSE_UNKNOWN] = "unknown",
+  [DIR_CLOSE_END_CELL] = "end_cell",
+  [DIR_CLOSE_DESTROY_CELL] = "destroy_cell",
+  [DIR_CLOSE_CHANNEL_CLOSED] = "channel_closed",
+  [DIR_CLOSE_TIMEOUT] = "timeout",
+  [DIR_CLOSE_BEGINDIR_RATE] = "begindir_rate",
+  [DIR_CLOSE_HSDIR_SECOND_REQUEST] = "hsdir_second_request",
+  [DIR_CLOSE_HSDIR_UNKNOWN_PREV_HOP] = "hsdir_unknown_prev_hop",
+  [DIR_CLOSE_HSDIR_FETCH_SHED] = "hsdir_fetch_shed",
+  [DIR_CLOSE_CELL_QUEUE_FULL] = "cell_queue_full",
+  [DIR_CLOSE_OOM] = "oom",
+  [DIR_CLOSE_PROTOCOL] = "protocol",
+  [DIR_CLOSE_OTHER] = "other",
+};
+CTASSERT(ARRAY_LENGTH(dir_close_reason_names) == DIR_CLOSE_REASON_COUNT);
+/* close_reason and dir_close_reason are four-bit fields. */
+CTASSERT(DIR_CLOSE_REASON_COUNT <= 16);
+
 /** Count the request on the tunneled directory server connection <b>conn</b>
  * as <b>type</b>, once: later calls for <b>conn</b> do nothing. DirPort
- * connections aren't counted. */
+ * connections aren't counted. A request we close without reading is also
+ * counted by the first cause <b>conn</b> noted of its closing. */
 void
 relay_note_dir_request(dir_connection_t *conn, dir_request_type_t type)
 {
@@ -1443,6 +1479,9 @@ relay_note_dir_request(dir_connection_t *conn, dir_request_type_t type)
     return;
   conn->request_type = type + 1;
   dir_requests[type][conn->prev_hop]++;
+  if (type >= DIR_REQUEST_NO_REQUEST)
+    dir_close_reasons[type - DIR_REQUEST_NO_REQUEST][conn->prev_hop]
+                     [conn->close_reason]++;
 }
 
 /** Directory response bytes their stream read, by one more than the type of
@@ -1479,6 +1518,28 @@ fill_begindir_request_values(void)
                         "type", dir_request_names[t], "prev_hop",
                         prev_hop_names, dir_requests[t],
                         CHANNEL_PREV_HOP_COUNT);
+}
+
+/** Fill function for the RELAY_METRICS_NUM_BEGINDIR_CLOSE_REASONS metric. */
+static void
+fill_begindir_close_reason_values(void)
+{
+  const relay_metrics_entry_t *rentry =
+    &base_metrics[RELAY_METRICS_NUM_BEGINDIR_CLOSE_REASONS];
+
+  for (int t = 0; t < 2; t++)
+    for (int p = 0; p < CHANNEL_PREV_HOP_COUNT; p++)
+      for (int r = 0; r < DIR_CLOSE_REASON_COUNT; r++) {
+        metrics_store_entry_t *sentry = metrics_store_add(
+            the_store, rentry->type, rentry->name, rentry->help, 0, NULL);
+        metrics_store_entry_add_label(sentry, metrics_format_label("type",
+                         dir_request_names[DIR_REQUEST_NO_REQUEST + t]));
+        metrics_store_entry_add_label(sentry,
+                         metrics_format_label("prev_hop", prev_hop_names[p]));
+        metrics_store_entry_add_label(sentry,
+                  metrics_format_label("reason", dir_close_reason_names[r]));
+        metrics_store_entry_update(sentry, dir_close_reasons[t][p][r]);
+      }
 }
 
 /** Fill function for the RELAY_METRICS_NUM_CREATE_CELLS metric. */

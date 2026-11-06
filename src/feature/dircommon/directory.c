@@ -523,6 +523,19 @@ connection_dir_process_inbuf(dir_connection_t *conn)
   return 0;
 }
 
+/** Note <b>reason</b> as what is closing the directory connection
+ * <b>conn</b>, or the one linked to the stream <b>conn</b>, unless it noted
+ * a cause already. relay_note_dir_request() counts the first one of a
+ * tunneled server connection we close without reading a request. */
+void
+connection_dir_note_close_reason(connection_t *conn, dir_close_reason_t reason)
+{
+  if (conn->type != CONN_TYPE_DIR)
+    conn = conn->linked_conn;
+  if (conn && conn->type == CONN_TYPE_DIR && !TO_DIR_CONN(conn)->close_reason)
+    TO_DIR_CONN(conn)->close_reason = reason;
+}
+
 /** Called when we're about to finally unlink and free a directory connection:
  * perform necessary accounting and cleanup */
 void

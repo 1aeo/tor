@@ -450,6 +450,27 @@ typedef enum channel_prev_hop_t {
   CHANNEL_PREV_HOP_COUNT
 } channel_prev_hop_t;
 
+/** What closed a tunneled directory server connection, or its stream or
+ * circuit: the first cause we noted. We count it for the connections we
+ * closed without reading a request: see relay_note_dir_request(). */
+typedef enum dir_close_reason_t {
+  DIR_CLOSE_UNKNOWN = 0, /**< Nothing we noted. */
+  DIR_CLOSE_END_CELL, /**< Its stream received a RELAY_END. */
+  DIR_CLOSE_DESTROY_CELL, /**< Its circuit received a DESTROY. */
+  DIR_CLOSE_CHANNEL_CLOSED, /**< A channel of its circuit closed. */
+  DIR_CLOSE_TIMEOUT, /**< It stalled for TestingDirConnectionMaxStall. */
+  DIR_CLOSE_BEGINDIR_RATE, /**< DoSBeginDirRate closed its circuit. */
+  DIR_CLOSE_HSDIR_SECOND_REQUEST, /**< Its circuit's second HSDir request. */
+  DIR_CLOSE_HSDIR_UNKNOWN_PREV_HOP, /**< By HSDirRefuseUnknownPrevHop. */
+  DIR_CLOSE_HSDIR_FETCH_SHED, /**< HSDirFetchShedding closed its circuit. */
+  DIR_CLOSE_CELL_QUEUE_FULL, /**< Its circuit's cell queue was full. */
+  DIR_CLOSE_OOM, /**< The out-of-memory handler closed it. */
+  DIR_CLOSE_PROTOCOL, /**< Another protocol violation closed its circuit. */
+  DIR_CLOSE_OTHER, /**< Its circuit closed for any other reason. */
+
+  DIR_CLOSE_REASON_COUNT
+} dir_close_reason_t;
+
 /** The cells one source of circuits sent in its latest minute: see
  * rep_hist_note_source_cell(). */
 typedef struct source_minute_t {
