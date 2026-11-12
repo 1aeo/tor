@@ -596,8 +596,13 @@ tor_tls_context_new(crypto_pk_t *identity, unsigned int key_lifetime,
         }
         success = true;
         break;
+      } else {
+        static bool have_warned_failure = false;
+        int severity = have_warned_failure ? LOG_INFO : LOG_WARN;
+        log_fn(severity, LD_NET, "OpenSSL didn't accept group list %s. "
+               "Maybe upgrade? Or report a bug?", list);
+        have_warned_failure = true;
       }
-      log_info(LD_NET, "Group list %s wasn't accepted", list);
     }
     if (! success) {
       log_warn(LD_NET, "No lists of TLS groups were supported. "
