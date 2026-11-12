@@ -1,0 +1,7 @@
+  o Major bugfixes (DoS mitigation):
+    - Track IPv6 clients by their /64 prefix instead of their individual
+      address. TROVE-2026-031. Fixes bug 41344; bugfix on 0.3.3.2-alpha.
+  o Minor features (statistics):
+    - The unique client counts that relays and bridges report in their
+      extra-info document now count an IPv6 /64 as a single client rather than
+      counting every address. Part of ticket 41344.
