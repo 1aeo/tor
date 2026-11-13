@@ -1,0 +1,5 @@
+  o Minor bugfixes (client directory fetches):
+    - Avoid a latent client-side assert that could happen if we try to
+      make an indirect begin_dir directory request to a V2Dir relay
+      with ORPort 0. (The consensus doesn't include any relays like
+      that currently.) Fixes bug 41476; bugfix on 0.2.8.2-alpha.
