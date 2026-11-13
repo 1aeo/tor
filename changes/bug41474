@@ -1,0 +1,7 @@
+  o Minor bugfixes (client stream isolation):
+    - Stop truncating the recorded length of HTTPTunnelPort stream
+      isolation header values to 8 bits. Previously, two different
+      X-Tor-Stream-Isolation (or Tor-Stream-Isolation) values longer than
+      251 bytes whose lengths agreed modulo 256 could be treated as equal
+      for ISO_SOCKSAUTH purposes and share a circuit. Fixes bug 41474;
+      bugfix on 0.3.2.1-alpha.
