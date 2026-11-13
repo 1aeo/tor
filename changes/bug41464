@@ -1,5 +1,0 @@
-  o Minor bugfixes (security):
-    - Reject any RESOLVED cell containing a hostname record that is not
-      a valid dns name.
-      Fixes bug 41464; bugfix on 0.1.1.1-alpha.
-      Tracked as TROVE-2026-075.

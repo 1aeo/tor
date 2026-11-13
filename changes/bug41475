@@ -1,4 +1,0 @@
-  o Minor bugfixes (relay, circuit handshake):
-    - Actually reject ntor-v3 subproto_request extensions whose entries
-      are not sorted and deduplicated, as intended. Fixes bug 41475;
-      bugfix on 0.4.9.3-alpha.

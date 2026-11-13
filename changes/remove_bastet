@@ -1,4 +1,0 @@
-  o Directory authority changes (bastet):
-    - Remove the keys for bastet due to a potential compromise. It can
-      be reinstated with new keys later.
-
