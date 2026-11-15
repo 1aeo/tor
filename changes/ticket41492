@@ -1,0 +1,5 @@
+  o Minor features (metrics port):
+    - New metrics on the MetricsPort with static build information such as
+      operating system name, tor version, and its git revision. Feature
+      proposed by Thomas Steen Rasmussen during the Tor Community Gathering.
+      Closes ticket 41492.

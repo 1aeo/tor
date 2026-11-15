@@ -404,12 +404,25 @@ test_store(void *arg)
   metrics_store_free(store);
 }
 
+static void
+test_build_info_metrics(void *arg)
+{
+  (void) arg;
+
+  const smartlist_t *store_list = metrics_get_stores();
+  tt_int_op(smartlist_len(store_list), OP_EQ, 1);
+
+ done:
+  metrics_cleanup();
+}
+
 struct testcase_t metrics_tests[] = {
 
   { "config", test_config, TT_FORK, NULL, NULL },
   { "connection", test_connection, TT_FORK, NULL, NULL },
   { "prometheus", test_prometheus, TT_FORK, NULL, NULL },
   { "prometheus_histogram", test_prometheus_histogram, TT_FORK, NULL, NULL },
+  { "build_info_metrics", test_build_info_metrics, TT_FORK, NULL, NULL },
   { "store", test_store, TT_FORK, NULL, NULL },
 
   END_OF_TESTCASES
