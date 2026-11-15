@@ -45,6 +45,11 @@ core.*
 *.ccls
 # clangd uses that for LSP caching.
 /.cache
+# LLM Agents file.
+# NOTE: This is temporary until we settle on one. Lets just avoid
+# merging one that is being tested or personalized.
+AGENTS.md
+AgentPlanningWorkflow.md
 
 # /
 /Makefile
