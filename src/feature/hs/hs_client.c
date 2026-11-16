@@ -2443,7 +2443,7 @@ parse_auth_file_content(const char *client_key_str)
 
   if (strlen(seckey_b32) != BASE32_NOPAD_LEN(CURVE25519_SECKEY_LEN)) {
     log_warn(LD_REND, "Client authorization encoded base32 private key "
-                      "length is invalid: %s", seckey_b32);
+             "length is invalid: %s", safe_str(seckey_b32));
     goto err;
   }
 
@@ -2453,7 +2453,7 @@ parse_auth_file_content(const char *client_key_str)
                     seckey_b32, strlen(seckey_b32)) !=
       sizeof(auth->enc_seckey.secret_key)) {
     log_warn(LD_REND, "Client authorization encoded base32 private key "
-                      "can't be decoded: %s", seckey_b32);
+             "can't be decoded: %s", safe_str(seckey_b32));
     goto err;
   }
 
