@@ -1189,7 +1189,7 @@ parse_authorized_client_key(const char *key_str, int severity)
    * buffer. */
   if (strlen(key_str) != BASE32_NOPAD_LEN(CURVE25519_PUBKEY_LEN)) {
     log_fn(severity, LD_REND, "Client authorization encoded base32 public key "
-                              "length is invalid: %s", key_str);
+           "length is invalid: %s", safe_str(key_str));
     goto err;
   }
 
@@ -1199,7 +1199,7 @@ parse_authorized_client_key(const char *key_str, int severity)
                     key_str, strlen(key_str)) !=
       sizeof(client->client_pk.public_key)) {
     log_fn(severity, LD_REND, "Client authorization public key cannot be "
-             "decoded: %s", key_str);
+           "decoded: %s", safe_str(key_str));
     goto err;
   }
 
