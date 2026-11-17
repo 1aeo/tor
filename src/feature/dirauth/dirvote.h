@@ -94,7 +94,7 @@
 #define MIN_METHOD_TO_OMIT_ALL_FAMILY_LISTS 37
 
 /**
- * Lowest support method for which we replace TAP keys with dummy
+ * Lowest supported method for which we replace TAP keys with dummy
  * keys, instead of omitting them.
  */
 #define MIN_METHOD_TO_USE_DUMMY_TAP_KEYS 38
