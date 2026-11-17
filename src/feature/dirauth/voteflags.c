@@ -138,7 +138,7 @@ router_is_active(const routerinfo_t *ri, const node_t *node, time_t now)
  *
  * The consensus is looked up by RSA identity but the hashring position comes
  * from the ed25519 identity. We rely on key pinning to keep that pair fixed,
- * otherwise a relay could keep its RSA identity and swap in a ground ed25519
+ * otherwise a relay could keep its RSA identity and swap in a crafted ed25519
  * key. Without pinning, or without an ed25519 key, this returns false. */
 static bool
 router_was_hs_dir_in_consensus(const routerinfo_t *router, time_t now)
@@ -154,7 +154,7 @@ router_was_hs_dir_in_consensus(const routerinfo_t *router, time_t now)
     return false;
   }
   /* Using the reasonably live consensus allows us a greater chance to recover
-   * after let say a massive network wide DDoS. Use the microdesc flavor
+   * after a massive network wide DDoS. Use the microdesc flavor
    * because this is the one clients build the hashring from. */
   ns = networkstatus_get_reasonably_live_consensus(now, FLAV_MICRODESC);
   if (!ns) {

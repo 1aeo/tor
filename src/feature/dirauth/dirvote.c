@@ -3923,7 +3923,7 @@ dirvote_get_vote(const char *fp, int flags)
     So instead we give every relay the same TAP key,
     in order to improve md compressibility.
 
-    To prove that ther eis nothing up my sleeve, here is the
+    To prove that there is nothing up my sleeve, here is the
     corresponding private key.
 
 -----BEGIN RSA PRIVATE KEY-----

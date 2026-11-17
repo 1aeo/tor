@@ -2332,7 +2332,7 @@ valid_dns_name_encoded_len(const char *name)
  *
  * (Specifically,
  * the name must be between 1 and 255 characters long,
- * and must consist of labels between in 1 and 63 characters long,
+ * and must consist of labels between 1 and 63 characters long,
  * and its labels must contain only alphanumeric characters and dashes,
  * and its labels must not begin or end with a dash.)
  */
