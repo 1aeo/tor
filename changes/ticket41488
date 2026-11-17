@@ -1,0 +1,5 @@
+  o Minor bugfixes (DoS mitigation):
+    - Clear connection tracking for all IPv6 addresses sharing a client history
+      entry when that entry is evicted. It prevent old connections from
+      decrementing a replacement entry's connection count leading to a loud
+      harmless BUG() trace in the logs. Fixes bug 41488; bugfix on 0.4.9.17.

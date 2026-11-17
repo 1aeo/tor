@@ -81,6 +81,7 @@ typedef enum {
  * countries have them blocked, or the DoS mitigation subsystem if enabled. */
 typedef struct clientmap_entry_t {
   HT_ENTRY(clientmap_entry_t) node;
+  /** Canonical address: IPv4 /32 or IPv6 /64. */
   tor_addr_t addr;
   /* Name of pluggable transport used by this client. NULL if no
      pluggable transport was used. */
@@ -107,6 +108,8 @@ void geoip_remove_old_clients(time_t cutoff);
 clientmap_entry_t *geoip_lookup_client(const tor_addr_t *addr,
                                        const char *transport_name,
                                        geoip_client_action_t action);
+bool geoip_client_entry_matches_addr(const clientmap_entry_t *entry,
+                                     const tor_addr_t *addr);
 size_t geoip_client_cache_total_allocation(void);
 size_t geoip_client_cache_handle_oom(time_t now, size_t min_remove_bytes);
 
