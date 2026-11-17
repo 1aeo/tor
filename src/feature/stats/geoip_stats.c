@@ -141,7 +141,7 @@ clientmap_entries_eq(const clientmap_entry_t *a, const clientmap_entry_t *b)
   if (strcmp_opt(a->transport_name, b->transport_name))
     return 0;
 
-  return !tor_addr_compare(&a->addr, &b->addr, CMP_EXACT) &&
+  return geoip_client_entry_matches_addr(a, &b->addr) &&
          a->action == b->action;
 }
 
@@ -202,6 +202,21 @@ clientmap_get_key_addr(const tor_addr_t *addr, tor_addr_t *key_out)
   memset(bytes + CLIENTMAP_IPV6_PREFIX_BYTES, 0,
          sizeof(bytes) - CLIENTMAP_IPV6_PREFIX_BYTES);
   tor_addr_from_ipv6_bytes(key_out, bytes);
+}
+
+/** Return true iff <b>addr</b> has the same clientmap address key as
+ * <b>entry</b>.
+ *
+ * Compare the exact IPv4 address /32 or an IPv6 /64 prefix. This ONLY compares
+ * the address of the entry, not the transport name. */
+bool
+geoip_client_entry_matches_addr(const clientmap_entry_t *entry,
+                                const tor_addr_t *addr)
+{
+  tor_addr_t key_addr;
+  /* This makes sure that the IP address is normalized properly. */
+  clientmap_get_key_addr(addr, &key_addr);
+  return tor_addr_eq(&entry->addr, &key_addr);
 }
 
 /* Return a newly allocated clientmap entry with the given action and address

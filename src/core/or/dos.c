@@ -1106,8 +1106,8 @@ dos_geoip_entry_about_to_free(const clientmap_entry_t *geoip_ent)
   SMARTLIST_FOREACH_BEGIN(get_connection_array(), connection_t *, conn) {
     if (conn->type == CONN_TYPE_OR) {
       or_connection_t *or_conn = TO_OR_CONN(conn);
-      if (!tor_addr_compare(&geoip_ent->addr, &TO_CONN(or_conn)->addr,
-                            CMP_EXACT)) {
+      if (geoip_client_entry_matches_addr(geoip_ent,
+                                          &TO_CONN(or_conn)->addr)) {
         or_conn->tracked_for_dos_mitigation = 0;
       }
     }
