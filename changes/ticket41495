@@ -1,0 +1,2 @@
+  o Directory authority changes (client, relay, service):
+    - Add sekhmet as a new directory authority. Closes ticket 41495.
