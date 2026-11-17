@@ -146,8 +146,8 @@ get_param_dos_num_circ_max_outq(const networkstatus_t *ns)
                                  DOS_NUM_CIRC_MAX_OUTQ_MAX);
 }
 
-/* Return true iff the circuit creation mitigation is enabled. We look at the
- * consensus for this else a default value is returned. */
+/* Return true iff the circuit creation mitigation is enabled. We look at
+ * our local config, else the consensus, else use a default value. */
 MOCK_IMPL(STATIC unsigned int,
 get_param_cc_enabled, (const networkstatus_t *ns))
 {

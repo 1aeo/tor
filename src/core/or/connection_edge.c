@@ -4245,8 +4245,9 @@ connection_exit_begin_conn(const relay_msg_t *msg, circuit_t *circ)
                                     layer_hint);
       return 0;
     }
-    /* Rate limit first so that a peer flooding BEGIN_DIR that the lifetime
-     * limit below refuses still hits the stronger rate defense. */
+    /* Rate limit first so that if a peer is flooding BEGIN_DIR and
+     * doesn't reach the lifetime limit, it still hits the stronger rate
+     * defense. */
     switch (dos_begindir_new_request(or_circ)) {
       case DOS_STREAM_DEFENSE_NONE:
         break;
