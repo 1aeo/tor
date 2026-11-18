@@ -317,3 +317,22 @@ llm-security-gate:
     - job: llm-security
       artifacts: true
 
+# Opt in through a protected pipeline schedule with
+# LLM_SECURITY_SCHEDULED_DEEP_SCAN=true and define the two budgets there.
+llm-security-deep:
+  extends:
+    - .llm-security-deep
+    - .llm-security-scheduled-deep-rules
+  stage: security_scan
+
+llm-security-deep-gate:
+  extends:
+    - .llm-security-gate
+    - .llm-security-scheduled-deep-rules
+  stage: security_gate
+  variables:
+    LLM_SECURITY_ARTIFACT_DIR: llm-security-deep-artifacts
+  needs:
+    - job: llm-security-deep
+      artifacts: true
+
