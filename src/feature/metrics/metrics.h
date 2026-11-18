@@ -24,6 +24,7 @@ void metrics_cleanup(void);
 
 /* Accessors. */
 buf_t *metrics_get_output(const metrics_format_t fmt);
+const smartlist_t *metrics_get_stores(void);
 
 /* Connection. */
 int metrics_connection_process_inbuf(struct connection_t *conn);

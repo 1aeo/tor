@@ -33,5 +33,7 @@ const subsys_fns_t sys_metrics = {
 
   .initialize = subsys_metrics_initialize,
   .shutdown = subsys_metrics_shutdown,
+
+  .get_metrics = metrics_get_stores,
 };
 

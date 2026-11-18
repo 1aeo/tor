@@ -15,9 +15,12 @@
 #include "lib/malloc/malloc.h"
 #include "lib/metrics/metrics_store.h"
 #include "lib/net/resolve.h"
+#include "lib/osinfo/uname.h"
 #include "lib/string/printf.h"
 #include "lib/net/nettypes.h"
 #include "lib/net/address.h"
+#include "lib/version/git_revision.h"
+#include "lib/version/torversion.h"
 
 #include "core/mainloop/connection.h"
 #include "core/or/connection_or.h"
@@ -34,6 +37,53 @@
 
 /** Metrics format driver set by the MetricsPort option. */
 static metrics_format_t the_format = METRICS_FORMAT_PROMETHEUS;
+
+/** Metrics store for standard, static, metrics available to all Tor instances
+ * regardless of whether it's an client, onion service, relay, etc. */
+static metrics_store_t *standard_metrics_store = NULL;
+
+/** Smartlist used to return our `standard_metrics` store as a smartlist_t. */
+static smartlist_t *standard_metrics_list = NULL;
+
+static void
+build_standard_metrics_store(void)
+{
+  tor_assert(standard_metrics_store);
+
+  metrics_store_entry_t *entry = NULL;
+
+  entry = metrics_store_add(standard_metrics_store, METRICS_TYPE_GAUGE,
+                            METRICS_NAME(build_info),
+                            "Tor version, Git revision, and OS information.",
+                            0, NULL);
+
+  metrics_store_entry_add_label(entry,
+      metrics_format_label("version", get_short_version()));
+
+  metrics_store_entry_add_label(entry,
+      metrics_format_label("revision", tor_git_revision));
+
+  metrics_store_entry_add_label(entry,
+      metrics_format_label("os", get_uname()));
+
+  /* Always set to 1. */
+  metrics_store_entry_update(entry, 1);
+}
+
+const smartlist_t *
+metrics_get_stores(void)
+{
+  if (standard_metrics_store == NULL) {
+    return NULL;
+  }
+
+  if (standard_metrics_list == NULL) {
+    standard_metrics_list = smartlist_new();
+    smartlist_add(standard_metrics_list, standard_metrics_store);
+  }
+
+  return standard_metrics_list;
+}
 
 /** Return true iff the given peer address is allowed by our MetricsPortPolicy
  * option that is is in that list. */
@@ -271,10 +321,22 @@ metrics_connection_finished_flushing(connection_t *conn)
 void
 metrics_init(void)
 {
+  if (BUG(standard_metrics_store)) {
+    return;
+  }
+
+  standard_metrics_store = metrics_store_new();
+  build_standard_metrics_store();
 }
 
 /** Cleanup and free any global memory of this subsystem. */
 void
 metrics_cleanup(void)
 {
+  if (standard_metrics_store == NULL) {
+    return;
+  }
+
+  metrics_store_free(standard_metrics_store);
+  smartlist_free(standard_metrics_list);
 }
