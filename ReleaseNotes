@@ -8,16 +8,14 @@ Changes in version 0.4.9.17 - 2026-11-13
   directory authority changed IP address. There are also a series of minor
   bugfixes. If you are a relay operator, please upgrade as soon as possible.
 
-  o Directory authority changes (bastet):
+  o Directory authority changes (bastet and maatuska):
     - Remove the keys for bastet due to a potential compromise. It can
       be reinstated with new keys later.
+    - Change IP addresses for maatuska directory authority. Closes 41487.
 
   o Major bugfixes (DoS mitigation):
     - Track IPv6 clients by their /64 prefix instead of their individual
       address. TROVE-2026-031. Fixes bug 41344; bugfix on 0.3.3.2-alpha.
-
-  o Minor feature (dirauth):
-    - Change IP addresses for maatuska directory authority. Closes 41487.
 
   o Minor features (fallbackdir):
     - Regenerate fallback directories generated on November 13, 2026.
@@ -69,8 +67,9 @@ Changes in version 0.4.9.16 - 2026-11-04
       keys, we replace them with a dummy TAP key. (This is safe, because
       nothing has used TAP since v2 onion services.)
     - New consensus method 38 added for this TAP dummy key.
-    - Revert back the required protover version for both "Desc" and "Microdesc"
-      from 3 to 2 which is causing <= 0.4.8.x clients to exit(1).
+    - Revert back the required protover version for both "Desc" and
+      "Microdesc" from 3 to 2 which is causing <= 0.4.8.x clients
+      to exit(1).
 
   o Minor features (fallbackdir):
     - Regenerate fallback directories generated on November 04, 2026.
@@ -79,6 +78,7 @@ Changes in version 0.4.9.16 - 2026-11-04
     - Let dir auth fetches be twice as big, to allow for the fact that 9
       votes can exceed 16MB even compressed. Part of 41471; bugfix
       on 0.3.5.1-alpha.
+
 
 Changes in version 0.4.9.15 - 2026-10-28
   This is another security release that includes new DoS defenses against large
@@ -188,17 +188,16 @@ Changes in version 0.4.9.15 - 2026-10-28
       on 0.3.3.1-alpha.
 
   o Minor bugfixes (scheduling):
-    - Fix a bug in smartlist_pqueue_remove that could schedulers (for
-      circuits within a channel, and for channels on the internet
-      connection) to serve items in the wrong order, leading to
-      temporary starvation for higher-priority circuits. Fixes bug
-      41428; bugfix on 0.2.2.7-alpha.
+    - Fix a bug in smartlist_pqueue_remove that could cause schedulers --
+      for circuits within a channel, and for channels on the internet
+      connection -- to serve items in the wrong order, leading to
+      temporary starvation for higher-priority circuits. Fixes bug 41428;
+      bugfix on 0.2.2.7-alpha.
 
   o Minor bugfixes (security):
     - Fix a bug that a minority of directory authorities could use
-      to prevent a valid consensus from being generated.
-      Fixes bug 41456; bugfix on 0.2.1.5-alpha.
-      Tracked as TROVE-2026-072.
+      to prevent a valid consensus from being generated. Fixes bug 41456;
+      bugfix on 0.2.1.5-alpha. Tracked as TROVE-2026-072.
 
   o Minor bugfixes (relay, channel padding):
     - Clamp the netflow padding timeouts a peer negotiates with
@@ -209,11 +208,12 @@ Changes in version 0.4.9.15 - 2026-10-28
       "Bug:" warning and a padding cell each time. Fixes bug 41441;
       bugfix on 0.3.1.1-alpha.
 
+
 Changes in version 0.4.9.14 - 2026-10-07
-  Another week, another security release. This again contains major bugfixes
-  related to high severity issues. The fixes affect all Tor components: relay,
-  client, onion service and authority. We strongly recommend upgrading as soon
-  as possible.
+  Another week, another security release. This again contains major
+  bugfixes related to high severity issues. The fixes affect all Tor
+  components: relay, client, onion service, and authority. We strongly
+  recommend upgrading as soon as possible.
 
   o Major bugfixes (conflux, relay, security):
     - Only accept a CONFLUX_LINK cell on a plain OR circuit, and refuse
