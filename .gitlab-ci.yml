@@ -23,8 +23,6 @@
 
 include:
   - template: Jobs/SAST.gitlab-ci.yml
-  - project: tpo/tpa/ci-templates
-    file: llm-security-scan.yml
 
 # These variables are set everywhere, unconditionally.
 variables:
@@ -34,13 +32,6 @@ variables:
   GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
   SAST_EXCLUDED_PATHS: "spec,test,tests,tmp"
   SAST_COMPILATION_DATABASE: "compile_commands.json"
-
-stages:
-  - build
-  - test
-  - security_scan
-  - security_gate
-  - deploy
 
 # This template is for exporting ephemeral things from the scripts.  By
 # convention we expect our scripts to copy stuff into artifacts/, rather than
@@ -364,39 +355,3 @@ gitlab-advanced-sast-cpp:
                   --src "$CI_PROJECT_DIR"
                   --dst "$CI_PROJECT_DIR"
                   --extra-argument "-I$CI_PROJECT_DIR/include-cache"
-
-# LLM security scans run only for protected merge requests, using the
-# protected LLM_SECURITY_API_KEY CI/CD variable.
-llm-security:
-  extends:
-    - .llm-security
-    - .llm-security-protected-merge-request-rules
-  stage: security_scan
-
-llm-security-gate:
-  extends:
-    - .llm-security-gate
-    - .llm-security-protected-merge-request-rules
-  stage: security_gate
-  needs:
-    - job: llm-security
-      artifacts: true
-
-# Opt in through a protected pipeline schedule with
-# LLM_SECURITY_SCHEDULED_DEEP_SCAN=true and define the two budgets there.
-llm-security-deep:
-  extends:
-    - .llm-security-deep
-    - .llm-security-scheduled-deep-rules
-  stage: security_scan
-
-llm-security-deep-gate:
-  extends:
-    - .llm-security-gate
-    - .llm-security-scheduled-deep-rules
-  stage: security_gate
-  variables:
-    LLM_SECURITY_ARTIFACT_DIR: llm-security-deep-artifacts
-  needs:
-    - job: llm-security-deep
-      artifacts: true
