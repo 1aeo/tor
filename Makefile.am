@@ -206,28 +206,6 @@ EXTRA_DIST+= \
 	scripts/maint/checkspace_tests/same_guard.h			\
 	scripts/maint/checkspace_tests/subdir/dubious.c			\
 	scripts/maint/checkShellScripts.sh				\
-	scripts/maint/practracker/README				\
-	scripts/maint/practracker/exceptions.txt			\
-	scripts/maint/practracker/includes.py				\
-	scripts/maint/practracker/metrics.py				\
-	scripts/maint/practracker/practracker.py			\
-	scripts/maint/practracker/practracker_tests.py			\
-	scripts/maint/practracker/problem.py				\
-	scripts/maint/practracker/testdata/.may_include			\
-	scripts/maint/practracker/testdata/a.c				\
-	scripts/maint/practracker/testdata/b.c				\
-	scripts/maint/practracker/testdata/ex0-expected.txt		\
-	scripts/maint/practracker/testdata/ex0.txt			\
-	scripts/maint/practracker/testdata/ex1-expected.txt		\
-	scripts/maint/practracker/testdata/ex1.txt			\
-	scripts/maint/practracker/testdata/ex1-overbroad-expected.txt	\
-	scripts/maint/practracker/testdata/ex1-regen-expected.txt	\
-	scripts/maint/practracker/testdata/ex1-regen-overbroad-expected.txt \
-	scripts/maint/practracker/testdata/ex.txt			\
-	scripts/maint/practracker/testdata/header.h			\
-	scripts/maint/practracker/testdata/not_c_file			\
-	scripts/maint/practracker/test_practracker.sh			\
-	scripts/maint/practracker/util.py				\
 	scripts/coccinelle/apply.sh					\
 	scripts/coccinelle/check_cocci_parse.sh				\
 	scripts/coccinelle/exceptions.txt				\
@@ -543,19 +521,11 @@ endif
 
 check-includes:
 if USEPYTHON
-	$(PYTHON) $(top_srcdir)/scripts/maint/practracker/includes.py $(top_srcdir)
-endif
-
-check-best-practices:
-if USEPYTHON
-	@$(PYTHON) $(top_srcdir)/scripts/maint/practracker/practracker.py $(top_srcdir) $(TOR_PRACTRACKER_OPTIONS)
+	$(PYTHON) $(top_srcdir)/scripts/maint/checkIncludes.py $(top_srcdir)
 endif
 
 check-cocci:
 	VERBOSE=1 $(top_srcdir)/scripts/coccinelle/check_cocci_parse.sh $(OWNED_TOR_C_FILES)
-
-practracker-regen:
-	$(PYTHON) $(top_srcdir)/scripts/maint/practracker/practracker.py --regen $(top_srcdir)
 
 check-docs: all
 	$(PERL) $(top_builddir)/scripts/maint/checkOptionDocs.pl

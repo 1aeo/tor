@@ -8,7 +8,7 @@ other applications.
 The modules in `lib` are currently well-factored: each one depends
 only on lower-level modules.  You can see an up-to-date list of the
 modules, sorted from lowest to highest level, by running
-`./scripts/maint/practracker/includes.py --toposort`.
+`./scripts/maint/checkIncludes.py --toposort`.
 
 As of this writing, the library modules are (from lowest to highest
 level):
