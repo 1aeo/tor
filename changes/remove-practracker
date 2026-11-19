@@ -1,0 +1,4 @@
+  o Removed features (developer tooling):
+    - Remove the practracker tool along with the "check-best-practices" and
+      "practracker-regen" make targets. The include checker used by
+      "make check-includes" moved to scripts/maint/checkIncludes.py.

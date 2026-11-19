@@ -4,7 +4,7 @@ set -e
 
 TOR="${abs_top_builddir:-.}/src/app/tor"
 
-INCLUDES_PY="${abs_top_srcdir:-.}/scripts/maint/practracker/includes.py"
+INCLUDES_PY="${abs_top_srcdir:-.}/scripts/maint/checkIncludes.py"
 
 if ! test -x "${INCLUDES_PY}" ; then
     echo "skip"
