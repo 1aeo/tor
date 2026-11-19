@@ -21,14 +21,19 @@
 # Copyright 2020, The Tor Project, Inc.
 # See LICENSE for licence information.
 
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - project: tpo/tpa/ci-templates
+    file: llm-security-scan.yml
+
 # These variables are set everywhere, unconditionally.
 variables:
   TERM: "ansi"
   DEBUG_CI: "yes"
-
-include:
-  - project: tpo/tpa/ci-templates
-    file: llm-security-scan.yml
+  GITLAB_ADVANCED_SAST_ENABLED: "true"
+  GITLAB_ADVANCED_SAST_CPP_ENABLED: "true"
+  SAST_EXCLUDED_PATHS: "spec,test,tests,tmp"
+  SAST_COMPILATION_DATABASE: "compile_commands.json"
 
 stages:
   - build
@@ -141,7 +146,39 @@ debian-minimal:
   image: containers.torproject.org/tpo/tpa/base-images/debian:bookworm
   <<: *debian-template
   script:
-    - ./scripts/ci/ci-driver.sh
+    - apt-get install -y bear
+    - bear -- ./scripts/ci/ci-driver.sh
+    # Cache system headers needed by the Advanced SAST CPP scanner.  The
+    # scanner runs in a minimal container without the build dependencies.
+    # We must NOT copy glibc headers (stdlib.h etc.) as they conflict with
+    # the scanner container's own glibc version.  Only copy headers from
+    # the packages Tor actually depends on.
+    #
+    # Debian multiarch places some headers under /usr/include/<triplet>/
+    # (e.g. zconf.h, opensslconf.h).  We strip the triplet prefix so they
+    # land at the same relative path the compiler expects.
+    - mkdir -p include-cache
+    - |
+      dpkg -L libevent-dev libssl-dev zlib1g-dev liblzma-dev libseccomp-dev libscrypt-dev \
+        | grep '^/usr/include/' \
+        | while IFS= read -r f; do
+            rel="${f#/usr/include/}"
+            stripped=$(echo "$rel" | sed 's|^[^/]*-linux-[^/]*/||')
+            dest="include-cache/$stripped"
+            mkdir -p "$(dirname "$dest")"
+            cp -L "$f" "$dest" 2>/dev/null || true
+          done
+  artifacts:
+    name: "${CI_PROJECT_PATH}_${CI_JOB_STAGE}_${CI_COMMIT_REF_NAME}_${CI_COMMIT_SHA}"
+    expire_in: 1 week
+    when: always
+    paths:
+      - artifacts/
+      - compile_commands.json
+      - build/warning_flags
+      - build/orconfig.h
+      - build/micro-revision.i
+      - include-cache/
 
 # Minimal check on debian/i386: just make, make check.
 #
@@ -300,6 +337,34 @@ rust-latest:
   after_script:
     - cargo clean
 
+#####
+# Override both Advanced SAST jobs to consume the compilation database
+# produced by debian-minimal.
+#
+# GITLAB_ADVANCED_SAST_CPP_ENABLED triggers a separate clangsa-based job
+# (gitlab-advanced-sast-cpp) in addition to the Lightz-based
+# gitlab-advanced-sast job.  The CPP job hard-fails without a CDB; the
+# Lightz job benefits from it for correct .h file language detection.
+gitlab-advanced-sast:
+  needs:
+    - debian-minimal
+  dependencies:
+    - debian-minimal
+
+gitlab-advanced-sast-cpp:
+  needs:
+    - debian-minimal
+  dependencies:
+    - debian-minimal
+  variables:
+    SAST_COMPILATION_DATABASE: compile_commands_rebased.json
+  before_script:
+    - /cdb-rebase --input compile_commands.json
+                  --output compile_commands_rebased.json
+                  --src "$CI_PROJECT_DIR"
+                  --dst "$CI_PROJECT_DIR"
+                  --extra-argument "-I$CI_PROJECT_DIR/include-cache"
+
 # LLM security scans run only for protected merge requests, using the
 # protected LLM_SECURITY_API_KEY CI/CD variable.
 llm-security:
@@ -335,4 +400,3 @@ llm-security-deep-gate:
   needs:
     - job: llm-security-deep
       artifacts: true
-
