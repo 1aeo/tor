@@ -571,8 +571,9 @@ tor_tls_context_new(crypto_pk_t *identity, unsigned int key_lifetime,
       // be the same. We can't prefer P-256 in one, and X25519 in another.
       {
         OPENSSL_V_SERIES(3,5,0),
-        "?*X25519MLKEM768 / ?SecP256r1MLKEM768 / *P-256:?X25519:P-224"
+        "?*X25519MLKEM768 / ?SecP256r1MLKEM768 / *P-256:?X25519:?P-224"
       },
+      { OPENSSL_V_SERIES(3,5,0), "P-256:?X25519:?P-224" },
       { 0, "P-256:X25519:P-224" },
       { 0, "P-256:P-224" },
     };
@@ -595,8 +596,13 @@ tor_tls_context_new(crypto_pk_t *identity, unsigned int key_lifetime,
         }
         success = true;
         break;
+      } else {
+        static bool have_warned_failure = false;
+        int severity = have_warned_failure ? LOG_INFO : LOG_WARN;
+        log_fn(severity, LD_NET, "OpenSSL didn't accept group list %s. "
+               "Maybe upgrade? Or report a bug?", list);
+        have_warned_failure = true;
       }
-      log_info(LD_NET, "Group list %s wasn't accepted", list);
     }
     if (! success) {
       log_warn(LD_NET, "No lists of TLS groups were supported. "
