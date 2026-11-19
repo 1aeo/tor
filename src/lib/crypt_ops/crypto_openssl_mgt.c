@@ -153,7 +153,10 @@ crypto_openssl_early_init(void)
 
     unsigned long version_num = tor_OpenSSL_version_num();
     const char *version_str = crypto_openssl_get_version_str();
-    if (version_num == OPENSSL_VERSION_NUMBER &&
+    if (
+#ifndef LIBRESSL_VERSION_NUMBER
+        version_num == OPENSSL_VERSION_NUMBER &&
+#endif
         !strcmp(version_str, OPENSSL_VERSION_TEXT)) {
       log_info(LD_CRYPTO, "OpenSSL version matches version from headers "
                  "(%lx: %s).", version_num, version_str);

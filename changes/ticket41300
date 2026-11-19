@@ -1,0 +1,5 @@
+  o Minor features (security, TLS):
+    - When we are running with LibreSSL 4.4.0 (or later), support using the
+      ML-KEM768 for post-quantum key agreement. Patch written by @mw during the
+      recent Tor Community Gathering. Closes ticket 41300.
+
