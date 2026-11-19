@@ -1,0 +1,7 @@
+  o Major bugfixes (security):
+    - Mark the P-224 TLS key negotiation group as optional.  In
+      OpenSSL 4.x, this group is absent; but because we had not
+      marked the group as optional, OpenSSL 4.x was rejecting our
+      entire group list, and falling back to using its default
+      group list.  Fixes bug 41477; bugfix on 0.4.8.17.
+      Tracked as TROVE-2026-074.
