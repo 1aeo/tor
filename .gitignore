@@ -87,6 +87,9 @@ core.*
 /coverage_html/
 /callgraph/
 
+# Local reference checkouts
+/reference_repos/
+
 # /contrib/
 /contrib/dist/torctl
 /contrib/dist/tor.service
