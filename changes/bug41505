@@ -1,0 +1,5 @@
+  o Minor bugfixes (memory hygiene):
+    - Wipe the stack copy of a client's freshly derived per-hop relay
+      key material in circuit_finish_handshake() after it has been
+      installed. Fixes bug 41505; bugfix on 0.2.4.8-alpha.
+
