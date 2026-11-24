@@ -638,6 +638,7 @@ onion_skin_client_handshake(int type,
       if (onion_skin_ntor_client_handshake(handshake_state->u.ntor,
                                         reply,
                                         keys_tmp, keys_tmp_len, msg_out) < 0) {
+        memwipe(keys_tmp, 0, keys_tmp_len);
         tor_free(keys_tmp);
         return -1;
       }
@@ -659,6 +660,7 @@ onion_skin_client_handshake(int type,
               keys_tmp, keys_tmp_len,
               &server_msg, &server_msg_len);
     if (r < 0) {
+      memwipe(keys_tmp, 0, keys_tmp_len);
       tor_free(keys_tmp);
       tor_free(server_msg);
       return -1;
@@ -667,6 +669,7 @@ onion_skin_client_handshake(int type,
     if (negotiate_v3_ntor_client_circ_params(server_msg,
                                              server_msg_len,
                                              params_out) < 0) {
+      memwipe(keys_tmp, 0, keys_tmp_len);
       tor_free(keys_tmp);
       tor_free(server_msg);
       return -1;
