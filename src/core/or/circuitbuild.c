@@ -72,6 +72,7 @@
 #include "feature/relay/selftest.h"
 #include "feature/stats/predict_ports.h"
 #include "lib/crypt_ops/crypto_rand.h"
+#include "lib/crypt_ops/crypto_util.h"
 #include "lib/trace/events.h"
 #include "core/or/congestion_control_common.h"
 
@@ -1359,6 +1360,7 @@ circuit_finish_handshake(origin_circuit_t *circ,
                                     &msg) < 0) {
       if (msg)
         log_warn(LD_CIRC,"onion_skin_client_handshake failed: %s", msg);
+      memwipe(keys, 0, sizeof(keys));
       return -END_CIRC_REASON_TORPROTOCOL;
     }
   }
@@ -1366,8 +1368,14 @@ circuit_finish_handshake(origin_circuit_t *circ,
   onion_handshake_state_release(&hop->handshake_state);
   if (cpath_init_circuit_crypto(params.crypto_alg,
                                 hop, keys, keylen)<0) {
+    memwipe(keys, 0, sizeof(keys));
     return -END_CIRC_REASON_TORPROTOCOL;
   }
+
+  /* The key material now lives in the hop's cipher state; don't leave a
+   * copy behind on the stack. */
+  memwipe(keys, 0, sizeof(keys));
+
   hop->relay_cell_format = params.cell_fmt;
 
   if (params.cc_enabled) {
